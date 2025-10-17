@@ -13,10 +13,10 @@ class AuthGate extends StatefulWidget {
 class _AuthGateState extends State<AuthGate> {
   bool _navigated = false;
 
-  // If you want to block login until users verify email, set to true.
+  // If want to block login until users verify email
   static const bool requireEmailVerified = false;
 
-  // If you use a 'status' field in Firestore and only allow 'active' users, set to true.
+  // If use a 'status' field in Firestore and only allow 'active' users, set it to "true"
   static const bool requireActiveStatus = true;
 
   String _normalizeRole(String? raw) {
