@@ -279,10 +279,11 @@ class _StudentsList extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = Theme.of(context).textTheme;
 
-    // All appointments for this tutor (live)
+    // MODIFICATION: Only fetch appointments that have been completed.
     final appsStream = FirebaseFirestore.instance
         .collection('appointments')
         .where('helperId', isEqualTo: helperUid)
+        .where('status', isEqualTo: 'completed') // <-- ADDED THIS FILTER
         .snapshots();
 
     // All interests (ID -> display title)
@@ -330,7 +331,8 @@ class _StudentsList extends StatelessWidget {
         }
 
         if (studentIds.isEmpty) {
-          return _emptyBox('No students yet.');
+          // Changed message to reflect the new logic
+          return _emptyBox('No students with completed sessions yet.');
         }
 
         return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
@@ -395,6 +397,7 @@ class _StudentsList extends StatelessWidget {
                             interests: interestTitles,
                             lastSessionDate: last,
                             onView: () {
+                              // Functionality to redirect to Student Details page is preserved
                               Navigator.pushNamed(context, '/tutor/students/detail', arguments: {'studentId': sid});
                             },
                             onRemove: () async {

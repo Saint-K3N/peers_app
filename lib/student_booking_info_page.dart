@@ -46,8 +46,6 @@ class _StudentBookingInfoPageState extends State<StudentBookingInfoPage> {
   }
 
   String _fmtDate(DateTime d) {
-    // Note: Timestamps are stored in UTC. .toDate() converts them to the device's local time.
-    // To display in GMT+8, the device's timezone should be set to Kuala Lumpur time.
     return DateFormat('dd/MM/yyyy').format(d);
   }
 
@@ -57,11 +55,83 @@ class _StudentBookingInfoPageState extends State<StudentBookingInfoPage> {
     return DateFormat.jm().format(dt);
   }
 
-  Future<void> _cancelWithReason(String appointmentId, DateTime startAt) async {
-    final now = DateTime.now();
-    // isWithin24Hours is no longer needed to choose the dialog, but preserved for context/logging.
-    final isWithin24Hours = startAt.difference(now).inHours <= 24;
+  // NEW METHOD: Confirm Peer Reschedule Proposal
+  Future<void> _confirmReschedule(String appointmentId, Map<String, dynamic> appointmentData) async {
+    final m = appointmentData;
+    if (m['status'] != 'pending_reschedule_peer' || !mounted) return;
 
+    final newStartTs = m['proposedStartAt'] as Timestamp?;
+    final newEndTs = m['proposedEndAt'] as Timestamp?;
+
+    if (newStartTs == null || newEndTs == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Error: Proposed time missing.')));
+      }
+      return;
+    }
+
+    try {
+      await FirebaseFirestore.instance.collection('appointments').doc(appointmentId).set({
+        'status': 'confirmed',
+        'startAt': newStartTs, // Adopt proposed time
+        'endAt': newEndTs,
+        'updatedAt': FieldValue.serverTimestamp(),
+        // Clear proposal fields
+        'proposedStartAt': FieldValue.delete(),
+        'proposedEndAt': FieldValue.delete(),
+        'rescheduleReasonPeer': FieldValue.delete(),
+        'rescheduleReasonStudent': FieldValue.delete(),
+      }, SetOptions(merge: true));
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Reschedule confirmed!')));
+        setState(() {});
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Confirmation failed: $e')));
+      }
+    }
+  }
+
+  // NEW METHOD: Cancel Peer Reschedule Proposal (cancels the entire booking)
+  Future<void> _cancelPeerProposal(String appointmentId) async {
+    if (!mounted) return;
+
+    // Use the existing _CancelDialog to get a reason (max 20 chars)
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (_) => const _CancelDialog(),
+    );
+
+    if (reason == null || !mounted) return;
+
+    try {
+      await FirebaseFirestore.instance.collection('appointments').doc(appointmentId).set({
+        'status': 'cancelled',
+        'cancellationReason': reason,
+        'updatedAt': FieldValue.serverTimestamp(),
+        'cancelledBy': 'student',
+
+        // Clear proposal fields
+        'proposedStartAt': FieldValue.delete(),
+        'proposedEndAt': FieldValue.delete(),
+        'rescheduleReasonPeer': FieldValue.delete(),
+        'rescheduleReasonStudent': FieldValue.delete(),
+      }, SetOptions(merge: true));
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Appointment cancelled.')));
+        setState(() {});
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Cancellation failed: $e')));
+      }
+    }
+  }
+
+  Future<void> _cancelWithReason(String appointmentId, DateTime startAt) async {
     final reason = await showDialog<String>(
       context: context,
       builder: (_) => const _CancelDialog(),
@@ -109,11 +179,11 @@ class _StudentBookingInfoPageState extends State<StudentBookingInfoPage> {
     final String reason = result['reason'];
 
     if (reason.isEmpty) {
-      // This is handled in the dialog's FilledButton's onPressed, but acts as a fallback.
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('A reason is required to reschedule.')));
       return;
     }
 
+    // FIX: Check pending_reschedule_peer/student slots for conflicts too
     if (await _hasOverlap(helperId: helperId, startDt: newStart, endDt: newEnd, excludeId: apptId)) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Conflicts with another booking.')));
@@ -121,16 +191,20 @@ class _StudentBookingInfoPageState extends State<StudentBookingInfoPage> {
       return;
     }
 
-    await FirebaseFirestore.instance.collection('appointments').doc(apptId).update({
-      'startAt': Timestamp.fromDate(newStart),
-      'endAt': Timestamp.fromDate(newEnd),
-      'rescheduleReason': reason,
+    // FIX: Change Student-initiated reschedule to use the peer proposal state
+    await FirebaseFirestore.instance.collection('appointments').doc(apptId).set({
+      'status': 'pending_reschedule_student', // Student-initiated change needs Peer confirmation
+      'proposedStartAt': Timestamp.fromDate(newStart),
+      'proposedEndAt': Timestamp.fromDate(newEnd),
+      'rescheduleReasonStudent': reason,
       'previousStartAt': Timestamp.fromDate(currentStart),
       'updatedAt': FieldValue.serverTimestamp(),
-    });
+    }, SetOptions(merge: true));
+
 
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Rescheduled successfully.')));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Reschedule proposed. Waiting for helper confirmation.')));
+      setState(() {});
     }
   }
 
@@ -139,8 +213,9 @@ class _StudentBookingInfoPageState extends State<StudentBookingInfoPage> {
     for (final d in snap.docs) {
       if (excludeId != null && d.id == excludeId) continue;
       final m = d.data();
+      // FIX: Check pending_reschedule_peer/student slots for conflicts too
       final status = (m['status'] ?? '').toString().toLowerCase();
-      if (status != 'pending' && status != 'confirmed') continue;
+      if (status != 'pending' && status != 'confirmed' && status != 'pending_reschedule_peer' && status != 'pending_reschedule_student') continue;
       final tsStart = m['startAt'];
       final tsEnd = m['endAt'];
       if (tsStart is! Timestamp || tsEnd is! Timestamp) continue;
@@ -154,6 +229,8 @@ class _StudentBookingInfoPageState extends State<StudentBookingInfoPage> {
       case 'confirmed': return 'Confirmed';
       case 'completed': return 'Completed';
       case 'cancelled': return 'Cancelled';
+      case 'pending_reschedule_peer': return 'Awaiting Your Confirmation';
+      case 'pending_reschedule_student': return 'Awaiting Helper Review';
       default: return 'Pending';
     }
   }
@@ -163,6 +240,8 @@ class _StudentBookingInfoPageState extends State<StudentBookingInfoPage> {
       case 'confirmed': return (const Color(0xFFE3F2FD), const Color(0xFF1565C0));
       case 'completed': return (const Color(0xFFC8F2D2), const Color(0xFF2E7D32));
       case 'cancelled': return (const Color(0xFFFFE0E0), const Color(0xFFD32F2F));
+      case 'pending_reschedule_peer': return (const Color(0xFFFFF3CD), const Color(0xFF8A6D3B));
+      case 'pending_reschedule_student': return (const Color(0xFFE3F2FD), const Color(0xFF1565C0));
       default: return (const Color(0xFFEDEEF1), const Color(0xFF6B7280));
     }
   }
@@ -211,23 +290,49 @@ class _StudentBookingInfoPageState extends State<StudentBookingInfoPage> {
                   // NEW: Retrieve cancellation reason
                   final cancellationReason = (m['cancellationReason'] ?? '').toString().trim();
 
-                  // --- CORE LOGIC IMPLEMENTATION (Conditions 1 & 2) ---
+                  // NEW: Retrieve proposal details
+                  final proposedStartTs = (m['proposedStartAt'] as Timestamp?);
+                  final proposedEndTs = (m['proposedEndAt'] as Timestamp?);
+                  final peerReason = (m['rescheduleReasonPeer'] ?? '').toString();
+
+                  // FIX: If pending peer reschedule, display the proposed time, otherwise use original
+                  final isReschedulePendingPeer = statusRaw.toLowerCase() == 'pending_reschedule_peer';
+                  final displayStart = isReschedulePendingPeer ? proposedStartTs?.toDate() : start;
+                  final displayEnd = isReschedulePendingPeer ? proposedEndTs?.toDate() : end;
+
+
+                  // --- CORE LOGIC IMPLEMENTATION (Conditions 1 & 2 + Peer Proposal) ---
 
                   final bool isConfirmed = statusRaw.toLowerCase() == 'confirmed';
-                  final bool isCancelled = statusRaw.toLowerCase() == 'cancelled'; // New flag for cancellation check
-                  final bool statusOk = statusRaw.toLowerCase() == 'pending' || isConfirmed;
+                  final bool isCancelled = statusRaw.toLowerCase() == 'cancelled';
+                  final bool isPending = statusRaw.toLowerCase() == 'pending';
 
-                  // Use .inHours <= 24 for clean logic covering Condition 1 (less than or equal to)
+                  // Use the *original* start time for comparison (Condition 3 logic)
                   final bool isWithin24Hours = start != null && start.difference(DateTime.now()).inHours <= 24;
 
-                  bool canReschedule = false;
-                  bool canCancel = statusOk; // Student can always cancel if status is active/pending/confirmed
+                  bool canReschedule = false; // Regular Student reschedule
+                  bool canCancel = isPending; // Initial: Student can cancel if pending
 
-                  if (statusOk && start != null) {
+                  if (isReschedulePendingPeer) {
+                    // If Peer proposes: Student must confirm or cancel the whole booking
+                    // We use separate buttons for this, so hide the default cancel
+                    canCancel = false;
+                    canReschedule = false; // Block regular reschedule
+                  } else if (isConfirmed) {
+                    // Condition 1/2 logic
                     if (!isWithin24Hours) {
-                      // Condition 2: > 24 hours
+                      // Condition 2: Confirmed > 24 hours
                       canReschedule = true;
+                      canCancel = true;
+                    } else {
+                      // Condition 1: Confirmed <= 24 hours
+                      canCancel = false; // Student CANNOT cancel if confirmed and <= 24 hours
+                      canReschedule = false;
                     }
+                  } else if (statusRaw.toLowerCase() == 'pending_reschedule_student') {
+                    // Student initiated a change and is waiting for helper review. Actions are blocked.
+                    canReschedule = false;
+                    canCancel = false;
                   }
 
                   // Final checks before rendering
@@ -236,7 +341,7 @@ class _StudentBookingInfoPageState extends State<StudentBookingInfoPage> {
                     canReschedule = false;
                   }
 
-                  // --- END: CORE LOGIC IMPLEMENTATION (Conditions 1 & 2) ---
+                  // --- END: CORE LOGIC IMPLEMENTATION (Conditions 1 & 2 + Peer Proposal) ---
 
                   return Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -254,7 +359,7 @@ class _StudentBookingInfoPageState extends State<StudentBookingInfoPage> {
                       ),
                       const SizedBox(height: 12),
 
-                      // NEW: Display Cancellation Reason if cancelled
+                      // Display Cancellation Reason if cancelled
                       if (isCancelled && cancellationReason.isNotEmpty) ...[
                         _ReasonContainer(
                           label: 'Cancellation Reason',
@@ -263,14 +368,26 @@ class _StudentBookingInfoPageState extends State<StudentBookingInfoPage> {
                         ),
                         const SizedBox(height: 12),
                       ],
-                      // End of NEW logic
 
-                      _FieldShell(child: Row(children: [ Expanded(child: Text((start != null) ? _fmtDate(start) : '—', style: t.bodyMedium)), const Icon(Icons.calendar_month_outlined)])),
+                      _FieldShell(child: Row(children: [ Expanded(child: Text((displayStart != null) ? _fmtDate(displayStart) : '—', style: t.bodyMedium)), const Icon(Icons.calendar_month_outlined)])),
                       const SizedBox(height: 8),
-                      _FieldShell(child: Row(children: [ Expanded(child: Text((start != null && end != null) ? '${_fmtTime(TimeOfDay.fromDateTime(start))}  to  ${_fmtTime(TimeOfDay.fromDateTime(end))}' : '—', style: t.bodyMedium)), const Icon(Icons.timer_outlined)])),
+                      _FieldShell(child: Row(children: [ Expanded(child: Text((displayStart != null && displayEnd != null) ? '${_fmtTime(TimeOfDay.fromDateTime(displayStart))}  to  ${_fmtTime(TimeOfDay.fromDateTime(displayEnd))}' : '—', style: t.bodyMedium)), const Icon(Icons.timer_outlined)])),
                       const SizedBox(height: 8),
                       _FieldShell(child: Row(children: [ Expanded(child: Text(loc.isEmpty ? '—' : loc, style: t.bodyMedium)), const Icon(Icons.place_outlined)])),
                       const SizedBox(height: 12),
+
+                      // NEW: Display Peer Reschedule Proposal (REDUCED to only Reason)
+                      if (isReschedulePendingPeer && peerReason.isNotEmpty) ...[
+                        const SizedBox(height: 20),
+                        Text('Peer Reschedule Proposal', style: t.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
+                        const SizedBox(height: 10),
+                        // ONLY KEEP THE REASON CONTAINER
+                        _ReasonContainer(label: 'Peer Reason', reason: peerReason, isAlert: false), // isAlert: false for blue box
+                        const SizedBox(height: 10),
+                      ],
+                      // END NEW: Display Proposed Time
+
+
                       Container(
                         height: 160,
                         decoration: BoxDecoration(border: Border.all(color: Colors.black26), borderRadius: BorderRadius.circular(8)),
@@ -282,25 +399,64 @@ class _StudentBookingInfoPageState extends State<StudentBookingInfoPage> {
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
                           TextButton(onPressed: () => Navigator.maybePop(context), child: const Text('Back')),
-                          Wrap(
-                            spacing: 8,
-                            children: [
-                              // Only show buttons if not cancelled
-                              if (!isCancelled) ...[
-                                if (canReschedule && start != null && end != null) // Use new canReschedule flag
-                                  FilledButton.tonal(
-                                    onPressed: () => _rescheduleWithReason(context, apptId: _appointmentId!, helperId: helperIdFromDoc.isNotEmpty ? helperIdFromDoc : _helperId, currentStart: start, currentEnd: end),
-                                    child: const Text('Reschedule'),
-                                  ),
-                                if (canCancel && start != null) // Use new canCancel flag
-                                  FilledButton(
-                                    style: FilledButton.styleFrom(backgroundColor: Colors.red),
-                                    onPressed: () => _cancelWithReason(_appointmentId!, start),
-                                    child: const Text('Cancel Booking'),
-                                  ),
-                              ],
-                            ],
-                          ),
+
+                          // ACTION BUTTONS SECTION
+                          if (!isCancelled && _appointmentId != null && start != null && end != null)
+
+                          // 1. Peer Reschedule Proposal: Requires side-by-side, equal width buttons
+                            if (isReschedulePendingPeer)
+                              Expanded( // Use Expanded to force buttons to take up remaining space
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.end,
+                                  children: [
+                                    Expanded( // Confirm button (Green)
+                                      child: FilledButton(
+                                        style: FilledButton.styleFrom(
+                                          backgroundColor: const Color(0xFFB9C85B),
+                                          // Ensuring minimal padding for small screens when resized
+                                          padding: const EdgeInsets.symmetric(horizontal: 0),
+                                        ),
+                                        onPressed: () => _confirmReschedule(_appointmentId!, m),
+                                        // Shortened text as requested
+                                        child: const Text('Confirm', style: TextStyle(color: Colors.white), textAlign: TextAlign.center, overflow: TextOverflow.ellipsis),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded( // Cancel button (Red)
+                                      child: FilledButton(
+                                        style: FilledButton.styleFrom(
+                                          backgroundColor: Colors.red,
+                                          // Ensuring minimal padding for small screens when resized
+                                          padding: const EdgeInsets.symmetric(horizontal: 0),
+                                        ),
+                                        onPressed: () => _cancelPeerProposal(_appointmentId!),
+                                        // Shortened text as requested
+                                        child: const Text('Cancel', style: TextStyle(color: Colors.white), textAlign: TextAlign.center, overflow: TextOverflow.ellipsis),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              )
+
+                            // 2. Standard Reschedule/Cancel: Use Wrap for flexible sizing/wrapping
+                            else if (canReschedule || canCancel)
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 8,
+                                children: [
+                                  if (canReschedule)
+                                    FilledButton.tonal(
+                                      onPressed: () => _rescheduleWithReason(context, apptId: _appointmentId!, helperId: helperIdFromDoc.isNotEmpty ? helperIdFromDoc : _helperId, currentStart: start, currentEnd: end),
+                                      child: const Text('Reschedule'),
+                                    ),
+                                  if (canCancel)
+                                    FilledButton(
+                                      style: FilledButton.styleFrom(backgroundColor: Colors.red),
+                                      onPressed: () => _cancelWithReason(_appointmentId!, start),
+                                      child: const Text('Cancel Booking', style: TextStyle(color: Colors.white)),
+                                    ),
+                                ],
+                              ),
                         ],
                       ),
                     ],
@@ -317,6 +473,7 @@ class _StudentBookingInfoPageState extends State<StudentBookingInfoPage> {
 
 /* ------------------------------ Helper header ------------------------------ */
 class _HelperHeader extends StatelessWidget {
+// ... (rest of _HelperHeader remains unchanged)
   final String helperId;
   final String fallbackName, fallbackFaculty, fallbackEmail, fallbackBio;
   final int fallbackSessions;
@@ -406,6 +563,7 @@ class _HelperHeader extends StatelessWidget {
 
 /* -------------------------------- Widgets -------------------------------- */
 class _StudentHeader extends StatelessWidget {
+// ... (rest of _StudentHeader remains unchanged)
   const _StudentHeader();
   Future<void> _logout(BuildContext context) async {
     await FirebaseAuth.instance.signOut();
@@ -429,6 +587,7 @@ class _StudentHeader extends StatelessWidget {
 }
 
 class _Chip extends StatelessWidget {
+// ... (rest of _Chip remains unchanged)
   final String label;
   final Color bg, fg;
   const _Chip({required this.label, required this.bg, required this.fg});
@@ -437,6 +596,7 @@ class _Chip extends StatelessWidget {
 }
 
 class _FieldShell extends StatelessWidget {
+// ... (rest of _FieldShell remains unchanged)
   final Widget child;
   const _FieldShell({required this.child});
   @override
@@ -444,6 +604,7 @@ class _FieldShell extends StatelessWidget {
 }
 
 class _SpecializeLine extends StatelessWidget {
+// ... (rest of _SpecializeLine remains unchanged)
   final List<String> items;
   const _SpecializeLine({required this.items});
   @override
@@ -460,6 +621,7 @@ class _SpecializeLine extends StatelessWidget {
 }
 
 class _ReasonContainer extends StatelessWidget {
+// ... (rest of _ReasonContainer remains unchanged)
   final String label;
   final String reason;
   final bool isAlert;
@@ -473,18 +635,27 @@ class _ReasonContainer extends StatelessWidget {
     final borderColor = isAlert ? const Color(0xFFD32F2F) : const Color(0xFF1565C0);
     final labelColor = isAlert ? const Color(0xFFD32F2F) : const Color(0xFF1565C0);
 
+    // ** Custom Blue/Light Blue color for Peer Reason to match the previous design's blue box style **
+    final peerReasonBg = const Color(0xFFF8FAFF);
+    final peerReasonBorder = const Color(0xFFC7D0E6);
+    final peerReasonLabelColor = Colors.black87;
+
+    final finalBgColor = isAlert ? bgColor : (label == 'Peer Reason' ? peerReasonBg : bgColor);
+    final finalBorderColor = isAlert ? borderColor : (label == 'Peer Reason' ? peerReasonBorder : borderColor);
+    final finalLabelColor = isAlert ? labelColor : (label == 'Peer Reason' ? peerReasonLabelColor : labelColor);
+
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
-        color: bgColor,
+        color: finalBgColor,
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: borderColor, width: 1),
+        border: Border.all(color: finalBorderColor, width: 1),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label, style: t.labelMedium?.copyWith(fontWeight: FontWeight.w700, color: labelColor)),
+          Text(label, style: t.labelMedium?.copyWith(fontWeight: FontWeight.w700, color: finalLabelColor)),
           const SizedBox(height: 4),
           Text(reason.ifEmpty('—'), style: t.bodyMedium),
         ],
@@ -492,6 +663,28 @@ class _ReasonContainer extends StatelessWidget {
     );
   }
 }
+
+// NEW: _InfoRow Widget
+class _InfoRow extends StatelessWidget {
+  final String label;
+  final String value;
+  const _InfoRow({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = Theme.of(context).textTheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2.0),
+      child: Row(
+        children: [
+          Text('$label: ', style: t.bodySmall?.copyWith(fontWeight: FontWeight.w700)),
+          Text(value, style: t.bodySmall),
+        ],
+      ),
+    );
+  }
+}
+
 
 /* ------------------------------ Dialog Widgets ------------------------------ */
 
@@ -518,10 +711,8 @@ class _CancelDialogState extends State<_CancelDialog> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Simplified instruction text
           const Text('Please provide a reason for cancellation:'),
           const SizedBox(height: 12),
-          // Single TextField for all conditions
           TextField(
             controller: _reasonCtrl,
             decoration: const InputDecoration(
@@ -541,7 +732,6 @@ class _CancelDialogState extends State<_CancelDialog> {
           if (reason.isEmpty) {
             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('A reason is required.')));
           } else {
-            // Reason is guaranteed to be <= 20 chars due to TextField.maxLength
             Navigator.pop(context, reason);
           }
         }, child: const Text('Confirm Cancel')),

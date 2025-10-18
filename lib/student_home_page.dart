@@ -202,11 +202,10 @@ class _GreetingCardLoader extends StatelessWidget {
           stream: apptsStream,
           builder: (context, apptSnap) {
             final docs = apptSnap.data?.docs ?? const [];
-            int upcoming = docs.where((d) => ['pending', 'confirmed'].contains((d.data()['status'] ?? '').toString().toLowerCase())).length;
+            int upcoming = docs.where((d) => ['pending', 'confirmed', 'pending_reschedule_peer'].contains((d.data()['status'] ?? '').toString().toLowerCase())).length;
             int completed = docs.where((d) => (d.data()['status'] ?? '').toString().toLowerCase() == 'completed').length;
-            final upcomingDocs = docs.where((d) => ['pending', 'confirmed'].contains((d.data()['status'] ?? '').toString().toLowerCase())).toList();
+            final upcomingDocs = docs.where((d) => ['pending', 'confirmed', 'pending_reschedule_peer'].contains((d.data()['status'] ?? '').toString().toLowerCase())).toList();
 
-            // FIX: Use d.data() for safe field access when generating helperIds
             final Set<String> helperIds = upcomingDocs.map((d) => (d.data()['helperId'] ?? '').toString()).where((id) => id.isNotEmpty).toSet();
 
             return FutureBuilder<Map<String, String>>(
@@ -217,11 +216,10 @@ class _GreetingCardLoader extends StatelessWidget {
                 final roles = roleSnap.data ?? const {};
 
                 for (final d in upcomingDocs) {
-                  // FIX: Use d.data() for safe field access to prevent StateError
                   final apptData = d.data();
 
                   final hid = (apptData['helperId'] ?? '').toString();
-                  // ** Read role from appointment first, then fall back to roles map
+                  // Read role from appointment first, then fall back to roles map
                   final role = (apptData['role'] as String?) ?? roles[hid] ?? 'peer_tutor';
                   if (role == 'peer_counsellor') {
                     upcomingCounsellors++;
@@ -423,12 +421,14 @@ class _AppointmentsListState extends State<_AppointmentsList> {
   int _getStatusPriority(QueryDocumentSnapshot<Map<String, dynamic>> d) {
     final status = (d.data()['status'] ?? '').toString().toLowerCase();
     switch (status) {
+      case 'pending_reschedule_peer': // NEW: Highest priority for action needed
+        return 0;
       case 'confirmed':
-        return 1; // Highest priority
+        return 1;
       case 'pending':
         return 2;
       case 'cancelled':
-        return 3; // Lowest priority
+        return 3;
       default:
         return 4;
     }
@@ -460,7 +460,7 @@ class _AppointmentsListState extends State<_AppointmentsList> {
               ),
               _SortOptionTile(
                 label: 'Status Priority',
-                subtitle: 'Confirmed > Pending > Cancelled (Date as tie-breaker)',
+                subtitle: 'Awaiting Reschedule > Confirmed > Pending (Date as tie-breaker)',
                 selectedMode: _sortMode,
                 currentMode: AppointmentSortMode.statusPriority,
                 onTap: () {
@@ -474,6 +474,47 @@ class _AppointmentsListState extends State<_AppointmentsList> {
       },
     );
   }
+
+  // NEW METHOD: Confirm Peer Reschedule Proposal (Action for the tile button)
+  Future<void> _confirmReschedule(BuildContext context, {required String apptId}) async {
+    final doc = await FirebaseFirestore.instance.collection('appointments').doc(apptId).get();
+    final m = doc.data();
+
+    if (m == null || m['status'] != 'pending_reschedule_peer') return;
+
+    final newStartTs = m['proposedStartAt'] as Timestamp?;
+    final newEndTs = m['proposedEndAt'] as Timestamp?;
+
+    if (newStartTs == null || newEndTs == null) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Error: Proposed time missing.')));
+      }
+      return;
+    }
+
+    try {
+      await FirebaseFirestore.instance.collection('appointments').doc(apptId).set({
+        'status': 'confirmed', // Final status
+        'startAt': newStartTs, // Adopt proposed time
+        'endAt': newEndTs,     // Adopt proposed time
+        'updatedAt': FieldValue.serverTimestamp(),
+        // Clear proposal fields
+        'proposedStartAt': FieldValue.delete(),
+        'proposedEndAt': FieldValue.delete(),
+        'rescheduleReasonPeer': FieldValue.delete(),
+        'rescheduleReasonStudent': FieldValue.delete(),
+      }, SetOptions(merge: true));
+
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Reschedule confirmed!')));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Confirmation failed: $e')));
+      }
+    }
+  }
+
 
   @override
   Widget build(BuildContext context) {
@@ -516,7 +557,7 @@ class _AppointmentsListState extends State<_AppointmentsList> {
                 final dateComparison = (aTs?.millisecondsSinceEpoch ?? 0).compareTo(bTs?.millisecondsSinceEpoch ?? 0);
 
                 if (_sortMode == AppointmentSortMode.statusPriority) {
-                  // 1. Sort by Status: Confirmed -> Pending -> Cancelled
+                  // 1. Sort by Status: Awaiting Reschedule -> Confirmed -> Pending -> Cancelled
                   final statusA = _getStatusPriority(a);
                   final statusB = _getStatusPriority(b);
                   final statusComparison = statusA.compareTo(statusB);
@@ -534,7 +575,8 @@ class _AppointmentsListState extends State<_AppointmentsList> {
 
             if (docs.isEmpty) return Container(width: double.infinity, padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.black12)), child: const Text('No upcoming appointments yet.'));
 
-            return Column(children: [for (final d in docs) ...[ _AppointmentTile(appDoc: d), const SizedBox(height: 12)]]);
+            // Pass the action method down to _AppointmentTile
+            return Column(children: [for (final d in docs) ...[ _AppointmentTile(appDoc: d, onConfirmReschedule: _confirmReschedule), const SizedBox(height: 12)]]);
           },
         ),
       ],
@@ -543,6 +585,7 @@ class _AppointmentsListState extends State<_AppointmentsList> {
 }
 
 class _SortOptionTile extends StatelessWidget {
+// ... (remains unchanged)
   final String label;
   final String subtitle;
   final AppointmentSortMode selectedMode;
@@ -571,17 +614,14 @@ class _SortOptionTile extends StatelessWidget {
 
 class _AppointmentTile extends StatelessWidget {
   final QueryDocumentSnapshot<Map<String, dynamic>> appDoc;
-  const _AppointmentTile({required this.appDoc});
+  final Future<void> Function(BuildContext, {required String apptId}) onConfirmReschedule; // NEW PROP
+
+  const _AppointmentTile({required this.appDoc, required this.onConfirmReschedule}); // UPDATED CONSTRUCTOR
 
   String _fmtDate(DateTime d) => DateFormat('dd/MM/yyyy').format(d);
   String _fmtTime(TimeOfDay t) => DateFormat.jm().format(DateTime(2025,1,1,t.hour, t.minute));
 
   Future<void> _cancel(BuildContext context, {required String apptId, required DateTime start}) async {
-    // isWithin24Hours is no longer needed to choose the dialog, but needed for context if Peers saw it.
-    final now = DateTime.now();
-    final isWithin24Hours = start.difference(now).inHours <= 24;
-
-    // Pass isWithin24Hours for potential future logging/different cancel message, though dialog is now standard.
     final reason = await showDialog<String>(
       context: context,
       builder: (_) => const _CancelDialog(),
@@ -615,17 +655,18 @@ class _AppointmentTile extends StatelessWidget {
     final String reason = result['reason'];
 
     if (reason.isEmpty) {
-      // This is handled in the dialog's FilledButton's onPressed, but acts as a fallback.
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('A reason is required to reschedule.')));
       return;
     }
 
+    // Check for overlap (logic preserved)
     final snap = await FirebaseFirestore.instance.collection('appointments').where('helperId', isEqualTo: helperId).get();
     for(final d in snap.docs){
       if(d.id == apptId) continue;
       final m = d.data();
       final status = (m['status'] ?? '').toString().toLowerCase();
-      if(status != 'pending' && status != 'confirmed') continue;
+      // FIX: Check pending_reschedule_peer slots for conflicts too
+      if(status != 'pending' && status != 'confirmed' && status != 'pending_reschedule_peer') continue;
       final tsStart = m['startAt'];
       final tsEnd = m['endAt'];
       if(tsStart is Timestamp && tsEnd is Timestamp){
@@ -636,12 +677,17 @@ class _AppointmentTile extends StatelessWidget {
       }
     }
 
-    await FirebaseFirestore.instance.collection('appointments').doc(apptId).update({
-      'startAt': Timestamp.fromDate(newStart), 'endAt': Timestamp.fromDate(newEnd),
-      'rescheduleReason': reason, 'previousStartAt': Timestamp.fromDate(currentStart),
+    // FIX: Change Student-initiated reschedule to use the peer proposal state
+    await FirebaseFirestore.instance.collection('appointments').doc(apptId).set({
+      'status': 'pending_reschedule_student', // Student-initiated change needs Peer confirmation
+      'proposedStartAt': Timestamp.fromDate(newStart),
+      'proposedEndAt': Timestamp.fromDate(newEnd),
+      'rescheduleReasonStudent': reason,
+      'previousStartAt': Timestamp.fromDate(currentStart),
       'updatedAt': FieldValue.serverTimestamp(),
-    });
-    if(context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Rescheduled.')));
+    }, SetOptions(merge: true));
+
+    if(context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Reschedule proposed. Waiting for helper confirmation.')));
   }
 
   @override
@@ -654,35 +700,68 @@ class _AppointmentTile extends StatelessWidget {
     final location = (m['location'] ?? 'Campus').toString();
     final start = startTs?.toDate();
     final end = endTs?.toDate();
-    final date = (start != null) ? _fmtDate(start) : '—';
-    final time = (start != null && end != null) ? '${_fmtTime(TimeOfDay.fromDateTime(start))} - ${_fmtTime(TimeOfDay.fromDateTime(end))}' : '—';
+
+    // FIX: If pending peer reschedule, use proposed time for display if available
+    final isReschedulePendingPeer = status == 'pending_reschedule_peer';
+    final displayStart = isReschedulePendingPeer ? (m['proposedStartAt'] as Timestamp?)?.toDate() : start;
+    final displayEnd = isReschedulePendingPeer ? (m['proposedEndAt'] as Timestamp?)?.toDate() : end;
+
+    final date = (displayStart != null) ? _fmtDate(displayStart) : '—';
+    final time = (displayStart != null && displayEnd != null) ? '${_fmtTime(TimeOfDay.fromDateTime(displayStart))} - ${_fmtTime(TimeOfDay.fromDateTime(displayEnd))}' : '—';
 
     final (chipLabel, chipBg, chipFg) = switch (status) {
       'confirmed' => ('Confirmed', const Color(0xFFE3F2FD), const Color(0xFF1565C0)),
       'completed' => ('Completed', const Color(0xFFC8F2D2), const Color(0xFF2E7D32)),
       'cancelled' => ('Cancelled', const Color(0xFFFFE0E0), const Color(0xFFD32F2F)),
+      'pending_reschedule_peer' => ('Confirm Reschedule?', const Color(0xFFFFF3CD), const Color(0xFF8A6D3B)), // NEW CHIP
+      'pending_reschedule_student' => ('Awaiting Helper', const Color(0xFFE3F2FD), const Color(0xFF1565C0)), // NEW CHIP
       _ => ('Pending', Colors.grey.shade300, Colors.black87),
     };
 
-    // --- CORE LOGIC IMPLEMENTATION (Conditions 1 & 2) ---
-    final bool statusOk = status != 'cancelled' && status != 'completed';
+    // --- CORE LOGIC IMPLEMENTATION (Conditions 1 & 2 + Peer Proposal) ---
+    final bool isConfirmed = status == 'confirmed';
+    final bool isPending = status == 'pending';
+
+    // Check if the appointment status is one that allows user actions
+    final bool statusAllowsActions = isPending || isConfirmed || isReschedulePendingPeer || status == 'pending_reschedule_student';
+
+    // Use the *original* start time for comparison (Condition 3 logic)
     final bool isWithin24Hours = start != null && start.difference(DateTime.now()).inHours <= 24;
 
-    bool canReschedule = false;
-    bool canCancel = statusOk;
+    // --- BUTTON FLAGS ---
+    bool canReschedule = false; // Regular Student reschedule
+    bool canCancel = isPending; // Initial: Student can cancel if pending
+    bool canConfirmReschedule = false; // For Peer proposal response
 
-    if (statusOk && start != null) {
-      if (!isWithin24Hours) {
-        // Condition 2: > 24 hours
-        canReschedule = true;
-      }
-    }
-
-    if (start == null || end == null) {
-      canCancel = false;
+    if (isReschedulePendingPeer) {
+      // If Peer proposes: Student must confirm or cancel the whole booking
+      canConfirmReschedule = true;
+      canCancel = true; // Student can cancel the booking
       canReschedule = false;
+    } else if (isConfirmed) {
+      // Condition 1/2 logic
+      if (!isWithin24Hours) {
+        // Condition 2: Confirmed > 24 hours
+        canReschedule = true; // Show regular Reschedule button
+        canCancel = true;      // Student can cancel if confirmed and > 24 hours
+      } else {
+        // Condition 1: Confirmed <= 24 hours
+        canCancel = false; // Student CANNOT cancel if confirmed and <= 24 hours
+        canReschedule = false;
+      }
+    } else if (status == 'pending_reschedule_student') {
+      // If student initiated a change and is waiting, they cannot do anything else (except view details)
+      canReschedule = false;
+      canCancel = false;
     }
-    // --- END: CORE LOGIC IMPLEMENTATION (Conditions 1 & 2) ---
+
+    if (start == null || end == null || !statusAllowsActions) {
+      canReschedule = false;
+      canCancel = false;
+      canConfirmReschedule = false;
+    }
+    // --- END: CORE LOGIC IMPLEMENTATION (Conditions 1 & 2 + Peer Proposal) ---
+
 
     return FutureBuilder(
       future: Future.wait([
@@ -703,6 +782,14 @@ class _AppointmentTile extends StatelessWidget {
         final isTutor = role == 'peer_tutor';
         final title = isTutor ? 'Tutoring with $helperName' : 'Counselling with $helperName';
 
+        // Dynamic button label
+        final String rescheduleBtnLabel = isReschedulePendingPeer ? 'Confirm' : 'Reschedule';
+
+        // Pass original start/end to actions, even if display time is proposed.
+        final actualStart = start!;
+        final actualEnd = end!;
+
+
         return _ScheduleCard(
           avatarUrl: photoUrl, onAvatarTap: () {/* Navigate to peer profile */},
           icon: isTutor ? Icons.person_outline : Icons.psychology_alt_outlined,
@@ -710,9 +797,23 @@ class _AppointmentTile extends StatelessWidget {
           title: title, date: date, time: time, venue: location,
           borderColor: isTutor ? Colors.transparent : const Color(0xFF2F8D46),
           chipLabel: chipLabel, chipColor: chipBg, chipTextColor: chipFg,
-          showCancel: canCancel, showReschedule: canReschedule,
-          onCancel: (canCancel && start != null) ? () => _cancel(context, apptId: appDoc.id, start: start) : null,
-          onReschedule: (canReschedule && start != null && end != null) ? () => _reschedule(context, apptId: appDoc.id, helperId: helperId, currentStart: start, currentEnd: end) : null,
+          showCancel: canCancel,
+          showReschedule: canReschedule || canConfirmReschedule,
+
+          // ** FIX: Update onCancel (only for standard flows) **
+          onCancel: (canCancel && actualStart != null)
+              ? () => _cancel(context, apptId: appDoc.id, start: actualStart)
+              : null,
+
+          // ** FIX: Update onReschedule to handle both actions **
+          onReschedule: (canReschedule || canConfirmReschedule)
+              ? (isReschedulePendingPeer
+              ? () => onConfirmReschedule(context, apptId: appDoc.id) // NEW: Confirm proposal
+              : () => _reschedule(context, apptId: appDoc.id, helperId: helperId, currentStart: actualStart, currentEnd: actualEnd)) // Standard reschedule
+              : null,
+
+          rescheduleButtonLabel: rescheduleBtnLabel,
+
           onTap: () => Navigator.pushNamed(context, '/student/booking-info', arguments: {'appointmentId': appDoc.id, 'helperId': helperId}),
         );
       },
@@ -729,13 +830,16 @@ class _ScheduleCard extends StatelessWidget {
   final Color borderColor;
   final String chipLabel; final Color chipColor, chipTextColor;
   final bool showCancel, showReschedule;
+  final String rescheduleButtonLabel; // NEW PROP
   final VoidCallback? onCancel, onReschedule, onTap;
 
   const _ScheduleCard({
     this.avatarUrl, this.onAvatarTap, required this.icon, required this.iconColor,
     required this.title, required this.date, required this.time, required this.venue,
     required this.borderColor, required this.chipLabel, required this.chipColor, required this.chipTextColor,
-    required this.showCancel, required this.showReschedule, this.onCancel, this.onReschedule, this.onTap,
+    required this.showCancel, required this.showReschedule,
+    required this.rescheduleButtonLabel,
+    this.onCancel, this.onReschedule, this.onTap,
   });
 
   @override
@@ -754,7 +858,11 @@ class _ScheduleCard extends StatelessWidget {
           const SizedBox(height: 6),
           Text('Date: $date', style: t.bodySmall), Text('Time: $time', style: t.bodySmall), Text('Venue: $venue', style: t.bodySmall), const SizedBox(height: 8),
           if (showCancel || showReschedule) Align(alignment: Alignment.centerRight, child: Wrap(spacing: 8, children: [
-            if (showReschedule) _SmallButton(label: 'Reschedule', color: const Color(0xFF1565C0), onPressed: onReschedule ?? (){}),
+            if (showReschedule) _SmallButton(
+                label: rescheduleButtonLabel,
+                // FIX: Use Green for Confirm, Blue for Reschedule
+                color: (rescheduleButtonLabel == 'Confirm') ? const Color(0xFF1B5E20) : const Color(0xFF1565C0),
+                onPressed: onReschedule ?? (){}),
             if (showCancel) _SmallButton(label: 'Cancel', color: Colors.red, onPressed: onCancel ?? (){}),
           ])),
         ])),
@@ -765,6 +873,7 @@ class _ScheduleCard extends StatelessWidget {
 
 
 class _StatusChip extends StatelessWidget {
+// ... (remains unchanged)
   final String label; final Color bg, fg;
   const _StatusChip({required this.label, required this.bg, required this.fg});
   @override
@@ -772,6 +881,7 @@ class _StatusChip extends StatelessWidget {
 }
 
 class _SmallButton extends StatelessWidget {
+// ... (remains unchanged)
   final String label; final Color color; final VoidCallback onPressed;
   const _SmallButton({required this.label, required this.color, required this.onPressed});
   @override
@@ -781,13 +891,14 @@ class _SmallButton extends StatelessWidget {
 /* ------------------------------ Dialog Widgets (Modified) ------------------------------ */
 
 class _CancelDialog extends StatefulWidget {
-  // Removed isWithin24Hours from constructor, but kept the widget separate for potential future use.
+// ... (remains unchanged)
   const _CancelDialog();
   @override
   State<_CancelDialog> createState() => _CancelDialogState();
 }
 
 class _CancelDialogState extends State<_CancelDialog> {
+// ... (remains unchanged)
   final _reasonCtrl = TextEditingController();
 
   @override
@@ -811,8 +922,8 @@ class _CancelDialogState extends State<_CancelDialog> {
           TextField(
             controller: _reasonCtrl,
             decoration: const InputDecoration(
-              hintText: 'Reason (Max 20 characters)',
-              border: OutlineInputBorder(),
+                hintText: 'Reason (Max 20 characters)',
+                border: OutlineInputBorder()
             ),
             maxLines: 2,
             maxLength: 20, // Enforce max 20 characters and show counter
@@ -837,6 +948,7 @@ class _CancelDialogState extends State<_CancelDialog> {
 }
 
 class _RescheduleDialog extends StatefulWidget {
+// ... (remains unchanged)
   final DateTime currentStart, currentEnd;
   const _RescheduleDialog({required this.currentStart, required this.currentEnd});
   @override
@@ -844,6 +956,7 @@ class _RescheduleDialog extends StatefulWidget {
 }
 
 class _RescheduleDialogState extends State<_RescheduleDialog> {
+// ... (remains unchanged)
   late DateTime _date;
   late TimeOfDay _startTod, _endTod;
   final _reasonCtrl = TextEditingController();
@@ -911,7 +1024,6 @@ class _RescheduleDialogState extends State<_RescheduleDialog> {
             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('New time must be in the future.')));
             return;
           }
-          // The maxLength prevents > 20 chars, so we only need to check for empty.
           if (reason.isEmpty) {
             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('A reason is required.')));
             return;

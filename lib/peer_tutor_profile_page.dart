@@ -948,11 +948,16 @@ class _StudentsYouWorkedWith extends StatelessWidget {
 
     final byStudent =
     <String, List<QueryDocumentSnapshot<Map<String, dynamic>>>>{};
+
+    // Filter appointments to only consider completed sessions
     for (final d in appts.docs) {
       final s = (d['studentId'] ?? '').toString();
-      if (s.isEmpty) continue;
+      // Check for 'completed' status
+      final status = (d['status'] ?? '').toString().toLowerCase().trim();
+      if (s.isEmpty || status != 'completed') continue;
       (byStudent[s] ??= []).add(d);
     }
+
     if (byStudent.isEmpty) return [];
 
     final students = <_StudentMini>[];
@@ -995,10 +1000,8 @@ class _StudentsYouWorkedWith extends StatelessWidget {
       }
 
       // completed sessions count (with THIS student), case-insensitive
-      final completedCount = apptsWithStudent
-          .where((a) =>
-      (a['status'] ?? '').toString().toLowerCase().trim() == 'completed')
-          .length;
+      // Since `apptsWithStudent` already only contains completed sessions, we just count them
+      final completedCount = apptsWithStudent.length;
 
       students.add(_StudentMini(
         studentId: studentId,
@@ -1037,7 +1040,7 @@ class _StudentsYouWorkedWith extends StatelessWidget {
                   style: t.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
               const SizedBox(height: 10),
               if (students.isEmpty)
-                Text('No students yet.', style: t.bodySmall)
+                Text('No students yet (only completed sessions count).', style: t.bodySmall)
               else
                 Wrap(
                   spacing: 12,

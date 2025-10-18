@@ -974,10 +974,13 @@ class _PeersYouWorkedWith extends StatelessWidget {
 
     final completedByStudent =
     <String, List<QueryDocumentSnapshot<Map<String, dynamic>>>>{};
+
+    // Filter appointments to only consider completed sessions
     for (final d in appts.docs) {
       final s = (d['studentId'] ?? '').toString();
-      final status = (d['status'] ?? '').toString().toLowerCase().trim(); // CHECK STATUS
-      if (s.isEmpty || status != 'completed') continue; // ONLY COMPLETED SESSIONS
+      // Check for 'completed' status
+      final status = (d['status'] ?? '').toString().toLowerCase().trim();
+      if (s.isEmpty || status != 'completed') continue;
       (completedByStudent[s] ??= []).add(d);
     }
 
@@ -1042,8 +1045,8 @@ class _PeersYouWorkedWith extends StatelessWidget {
     // Route to the peer counsellor's specific peer detail page
     Navigator.pushNamed(
       context,
-      '/counsellor/peers/detail', // Use the route from peer_counsellor_peers_page.dart
-      arguments: {'peerId': p.peerId}, // Only 'peerId' is needed for the detail page
+      '/counsellor/peers/detail',
+      arguments: {'peerId': p.peerId},
     );
   }
 
@@ -1064,7 +1067,7 @@ class _PeersYouWorkedWith extends StatelessWidget {
                   t.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
               const SizedBox(height: 10),
               if (peers.isEmpty)
-                Text('No peers yet (only completed sessions count).', style: t.bodySmall) // UPDATED TEXT
+                Text('No peers yet (only completed sessions count).', style: t.bodySmall)
               else
                 Wrap(
                   spacing: 12,

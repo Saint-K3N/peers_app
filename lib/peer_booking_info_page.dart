@@ -78,22 +78,27 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
     }
   }
 
+  // -----------------------------------------------------------------------
+  // FIX: Safe Snackbar wrapper to prevent framework assertion errors on rebuild
+  // -----------------------------------------------------------------------
+  Future<void> _showSnackbarSafe(String message) async {
+    // Wait for the next frame to avoid collision with the current build cycle
+    await Future.delayed(Duration.zero);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
   Future<void> _markCompleted(String id) async {
     try {
       await FirebaseFirestore.instance.collection('appointments').doc(id).update({
         'status': 'completed',
         'updatedAt': FieldValue.serverTimestamp(),
       });
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('Marked as completed.')));
-      }
+      // Stabilized SnackBar call
+      await _showSnackbarSafe('Marked as completed.');
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to complete: $e')),
-        );
-      }
+      // Stabilized SnackBar call
+      await _showSnackbarSafe('Failed to complete: $e');
     }
   }
 
@@ -103,16 +108,11 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
         'status': 'missed',
         'updatedAt': FieldValue.serverTimestamp(),
       });
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('Marked as missed.')));
-      }
+      // Stabilized SnackBar call
+      await _showSnackbarSafe('Marked as missed.');
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to mark missed: $e')),
-        );
-      }
+      // Stabilized SnackBar call
+      await _showSnackbarSafe('Failed to mark missed: $e');
     }
   }
 
@@ -123,17 +123,11 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
         'status': 'confirmed',
         'updatedAt': FieldValue.serverTimestamp(),
       });
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Appointment confirmed.')),
-        );
-      }
+      // Stabilized SnackBar call
+      await _showSnackbarSafe('Appointment confirmed.');
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to confirm: $e')),
-        );
-      }
+      // Stabilized SnackBar call
+      await _showSnackbarSafe('Failed to confirm: $e');
     }
   }
 
@@ -146,11 +140,8 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
     final isWithin24Hours = start.difference(DateTime.now()).inHours <= 24;
 
     if (isConfirmed && isWithin24Hours) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Confirmed appointments cannot be cancelled by the Peer within 24 hours (Condition 1).')),
-        );
-      }
+      // Stabilized SnackBar call
+      await _showSnackbarSafe('Confirmed appointments cannot be cancelled by the Peer within 24 hours (Condition 1).');
       return;
     }
 
@@ -166,10 +157,8 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
 
     if (reason != null && mounted) {
       if (reason.isEmpty) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Please enter a reason (max 20 characters).')));
-        }
+        // Stabilized SnackBar call
+        await _showSnackbarSafe('Please enter a reason (max 20 characters).');
         return;
       }
       try {
@@ -179,17 +168,11 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
           'cancelledBy': 'helper',
           'updatedAt': FieldValue.serverTimestamp(),
         });
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Booking cancelled.')),
-          );
-        }
+        // Stabilized SnackBar call
+        await _showSnackbarSafe('Booking cancelled.');
       } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Cancel failed: $e')),
-          );
-        }
+        // Stabilized SnackBar call
+        await _showSnackbarSafe('Cancel failed: $e');
       }
     }
   }
@@ -198,7 +181,7 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
   Future<void> _rescheduleWithReason(String apptId, DateTime currentStart, DateTime currentEnd) async {
     // Condition 1: Reschedule not allowed within 24 hours.
     if (currentStart.difference(DateTime.now()).inHours <= 24) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Reschedule not allowed within 24 hours (Condition 1).')));
+      await _showSnackbarSafe('Reschedule not allowed within 24 hours (Condition 1).');
       return;
     }
 
@@ -215,9 +198,7 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
 
     // Check overlap of the proposed time with *Peer's* existing schedule (excluding the current apptId)
     if (await _hasOverlap(helperId: FirebaseAuth.instance.currentUser!.uid, startDt: newStart, endDt: newEnd, excludeId: apptId)) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Proposed time conflicts with your existing schedule.')));
-      }
+      await _showSnackbarSafe('Proposed time conflicts with your existing schedule.');
       return;
     }
 
@@ -230,13 +211,9 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
         'updatedAt': FieldValue.serverTimestamp(),
       });
 
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Reschedule proposed. Waiting for student confirmation.')));
-      }
+      await _showSnackbarSafe('Reschedule proposed. Waiting for student confirmation.');
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Reschedule failed: $e')));
-      }
+      await _showSnackbarSafe('Reschedule failed: $e');
     }
   }
 
@@ -247,7 +224,7 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
     final newEndTs   = m['proposedEndAt'] as Timestamp?;
 
     if (newStartTs == null || newEndTs == null) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Reschedule data is incomplete.')));
+      await _showSnackbarSafe('Reschedule data is incomplete.');
       return;
     }
 
@@ -255,7 +232,7 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
     final newEndDt   = newEndTs.toDate();
 
     if (await _hasOverlap(helperId: helperId, startDt: newStartDt, endDt: newEndDt, excludeId: apptId)) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Proposed time conflicts with your existing schedule.')));
+      await _showSnackbarSafe('Proposed time conflicts with your existing schedule.');
       return;
     }
 
@@ -271,9 +248,9 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
 
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Reschedule confirmed and appointment updated.')));
+      await _showSnackbarSafe('Reschedule confirmed and appointment updated.');
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Confirmation failed: $e')));
+      await _showSnackbarSafe('Confirmation failed: $e');
     }
   }
 
@@ -377,7 +354,7 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
                       if (isPendingStudentReschedule) {
                         // Special state: Peer must confirm the student's proposal
                         canConfirm = false;
-                        canPeerCancel = false;
+                        canPeerCancel = true; // Peers can cancel the student's proposal
                         canPeerReschedule = false; // Peer can only accept or ignore
                       } else if (isWithin24Hours) {
                         // Condition 1: <= 24 hours
@@ -510,7 +487,7 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
                             Wrap(
                               spacing: 8,
                               children: [
-                                // Action: Accept Reschedule
+                                // Action: Accept Reschedule (for pending_reschedule_student)
                                 if (isPendingStudentReschedule)
                                   FilledButton(
                                     style: FilledButton.styleFrom(backgroundColor: const Color(0xFF2E7D32)),
@@ -533,7 +510,7 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
                                     child: const Text('Reschedule'),
                                   ),
 
-                                // Action: Cancel (For Condition 1 Pending, or Condition 2 Pending/Confirmed)
+                                // Action: Cancel (For Condition 1 Pending, or Condition 2 Pending/Confirmed, OR Pending Student Reschedule)
                                 if (canPeerCancel && start != null)
                                   FilledButton(
                                     style: FilledButton.styleFrom(backgroundColor: Colors.red),

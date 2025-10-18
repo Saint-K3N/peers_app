@@ -66,7 +66,7 @@ class _PeerTutorSchedulePageState extends State<PeerTutorSchedulePage> {
     final reasonCtrl = TextEditingController();
     final result = await showDialog<String?>(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: Text('$action Reason'),
         content: TextField(
           controller: reasonCtrl,
@@ -79,15 +79,18 @@ class _PeerTutorSchedulePageState extends State<PeerTutorSchedulePage> {
           ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, null), child: const Text('Close')),
+          // FIX: Use dialogContext to pop the dialog
+          TextButton(onPressed: () => Navigator.pop(dialogContext, null), child: const Text('Close')),
           FilledButton(
             onPressed: () {
               final reason = reasonCtrl.text.trim();
               if (reason.isEmpty || reason.length > 20) {
+                // Use original context for Snackbar (correct)
                 ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('A reason (max 20 characters) is required.')));
                 return;
               }
-              Navigator.pop(context, reason);
+              // FIX: Use dialogContext to pop the dialog
+              Navigator.pop(dialogContext, reason);
             },
             child: Text('Confirm $action'),
           ),

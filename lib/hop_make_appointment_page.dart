@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+
 class HopMakeAppointmentPage extends StatefulWidget {
   const HopMakeAppointmentPage({super.key});
 
@@ -24,6 +25,28 @@ class _HopMakeAppointmentPageState extends State<HopMakeAppointmentPage> {
     'Library - Discussion Room',
     'Student Centre',
   ];
+
+  String get _uid => FirebaseAuth.instance.currentUser?.uid ?? '';
+
+  // NEW: Helper to get HOP's name and role from the 'users' collection
+  Future<Map<String, String>> _getBookerInfo() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    if (uid.isEmpty) return {'name': 'HOP User', 'role': 'Head of Program'};
+
+    final snap = await FirebaseFirestore.instance.collection('users').doc(uid).get();
+    final data = snap.data() ?? {};
+
+    // Prioritize display name fields
+    String name = (data['fullName'] ?? data['name'] ?? data['displayName'] ?? 'HOP User').toString();
+    // Use role field or default to 'Head of Program'
+    String role = (data['role'] ?? 'Head of Program').toString();
+
+    // Simple role normalization check based on common roles
+    final normalizedRole = role.toLowerCase().trim();
+    if (normalizedRole == 'hop') role = 'Head of Program';
+
+    return {'name': name, 'role': role};
+  }
 
   final _notesCtrl = TextEditingController();
   bool _saving = false;
@@ -209,10 +232,18 @@ class _HopMakeAppointmentPageState extends State<HopMakeAppointmentPage> {
       final location =
       _mode == 'online' ? 'Online (Google Meet)' : (_venue ?? 'Campus');
 
+      final bookerInfo = await _getBookerInfo(); // <-- FETCH HOP INFO
+
       final appt = <String, dynamic>{
         // Participant ids
         'helperId': tutorId,      // the tutor
         'hopId': hopUser.uid,     // the HOP creating the booking
+
+        // NEW: Booker/HOP details for Peer Tutor display (Fix for issue 1)
+        'bookerId': hopUser.uid,
+        'bookerName': bookerInfo['name'], // HOP's full name
+        'bookerRole': bookerInfo['role'], // HOP's role, e.g., Head of Program
+
         // Datetimes
         'date': Timestamp.fromDate(DateTime(_date!.year, _date!.month, _date!.day)),
         'startAt': Timestamp.fromDate(startDt),
