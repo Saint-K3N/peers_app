@@ -6,6 +6,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'dart:math' as math;
+
 
 class StudentProfilePage extends StatefulWidget {
   const StudentProfilePage({super.key});
@@ -796,8 +798,11 @@ class _PastSessionRow extends StatelessWidget {
   final QueryDocumentSnapshot<Map<String, dynamic>> appDoc;
   const _PastSessionRow({required this.appDoc});
 
-  String _fmtDate(DateTime d) =>
-      '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}';
+  String _fmtDate(DateTime d) {
+    // KL is UTC+8, no complex timezone logic needed if server/client use UTC Timestamps
+    // and device is in the correct timezone.
+    return '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}';
+  }
 
   String _fmtTime(TimeOfDay t) {
     final h = t.hourOfPeriod == 0 ? 12 : t.hourOfPeriod;
@@ -814,6 +819,8 @@ class _PastSessionRow extends StatelessWidget {
     final endTs = m['endAt'] as Timestamp?;
     final location = (m['location'] ?? 'Campus').toString();
 
+    // Timestamps from Firestore are UTC. .toDate() converts them to device's local time.
+    // For GMT+8, the device must be set to that timezone.
     final start = startTs?.toDate();
     final end = endTs?.toDate();
     final date = (start != null) ? _fmtDate(start) : '—';
@@ -833,7 +840,7 @@ class _PastSessionRow extends StatelessWidget {
       ]),
       builder: (context, snap) {
         String helperName = 'Helper';
-        String role = 'peer';
+        String role = (m['role'] as String?) ?? 'peer_tutor'; // Read from appointment if available
         String? photoUrl;
 
         if (snap.hasData) {
@@ -870,9 +877,10 @@ class _PastSessionRow extends StatelessWidget {
             }
           }
 
-          if (appsSnap.docs.isNotEmpty) {
+          // Fallback to check peer_applications if role not in appointment doc
+          if (m['role'] == null && appsSnap.docs.isNotEmpty) {
             role =
-                (appsSnap.docs.first.data()['requestedRole'] ?? 'peer').toString();
+                (appsSnap.docs.first.data()['requestedRole'] ?? 'peer_tutor').toString();
           }
         }
 
@@ -976,15 +984,15 @@ class _PeopleYouWorkedWith extends StatelessWidget {
   const _PeopleYouWorkedWith({required this.studentId});
 
   Future<Map<String, List<_PersonMini>>> _loadPeople() async {
-    // Get all appointments (any status) for this student
-    final appts = await FirebaseFirestore.instance
+    // 1. Get all COMPLETED appointments for this student
+    final apptsSnap = await FirebaseFirestore.instance
         .collection('appointments')
         .where('studentId', isEqualTo: studentId)
+        .where('status', isEqualTo: 'completed') // ** Only completed sessions **
         .get();
 
-    final byHelper =
-    <String, List<QueryDocumentSnapshot<Map<String, dynamic>>>>{};
-    for (final d in appts.docs) {
+    final byHelper = <String, List<QueryDocumentSnapshot<Map<String, dynamic>>>>{};
+    for (final d in apptsSnap.docs) {
       final h = (d['helperId'] ?? '').toString();
       if (h.isEmpty) continue;
       (byHelper[h] ??= []).add(d);
@@ -994,11 +1002,15 @@ class _PeopleYouWorkedWith extends StatelessWidget {
     final tutors = <_PersonMini>[];
     final counsellors = <_PersonMini>[];
 
-    // For each helper, fetch role + user + completed count (with this student)
+    final interestTitlesCache = <String, String>{};
+
+    // 2. For each unique helper, fetch details
     for (final entry in byHelper.entries) {
       final helperId = entry.key;
-      final apptsWithHelper = entry.value;
+      final completedAppts = entry.value;
+      if (completedAppts.isEmpty) continue;
 
+      // Fetch role + user details
       final appsSnap = await FirebaseFirestore.instance
           .collection('peer_applications')
           .where('userId', isEqualTo: helperId)
@@ -1007,22 +1019,21 @@ class _PeopleYouWorkedWith extends StatelessWidget {
           .get();
 
       String role = appsSnap.docs.isNotEmpty
-          ? (appsSnap.docs.first.data()['requestedRole'] ?? 'peer').toString()
-          : 'peer';
+          ? (appsSnap.docs.first.data()['requestedRole'] ?? 'peer_tutor').toString()
+          : 'peer_tutor';
 
       final userSnap = await FirebaseFirestore.instance
           .collection('users')
           .doc(helperId)
           .get();
+      if (!userSnap.exists) continue;
+
       final userMap = userSnap.data() ?? {};
       final name = _pickString(userMap, [
-        'fullName',
-        'full_name',
-        'name',
-        'displayName',
-        'display_name'
-      ]) ??
-          'Helper';
+        'fullName', 'full_name', 'name', 'displayName', 'display_name'
+      ]) ?? 'Helper';
+
+      final bio = (userMap['about'] ?? '').toString();
 
       String? photoUrl;
       for (final k in ['photoUrl', 'photoURL', 'avatarUrl', 'avatar']) {
@@ -1032,8 +1043,7 @@ class _PeopleYouWorkedWith extends StatelessWidget {
           break;
         }
       }
-      if ((photoUrl == null || photoUrl!.isEmpty) &&
-          userMap['profile'] is Map<String, dynamic>) {
+      if ((photoUrl == null || photoUrl!.isEmpty) && userMap['profile'] is Map<String, dynamic>) {
         final prof = userMap['profile'] as Map<String, dynamic>;
         for (final k in ['photoUrl', 'photoURL', 'avatarUrl', 'avatar']) {
           final v = prof[k];
@@ -1044,29 +1054,47 @@ class _PeopleYouWorkedWith extends StatelessWidget {
         }
       }
 
-      // completed sessions count (with THIS student & helper), case-insensitive
-      final completedCount = apptsWithHelper
-          .where((a) =>
-      (a['status'] ?? '').toString().toLowerCase().trim() ==
-          'completed')
-          .length;
+      // Fetch specializations (interest titles)
+      final interestIds = (role == 'peer_tutor'
+          ? userMap['academicInterestIds']
+          : userMap['counselingTopicIds']) as List?;
+
+      final specializations = <String>[];
+      if (interestIds != null && interestIds.isNotEmpty) {
+        final idsToFetch = interestIds.map((e) => e.toString()).where((id) => interestTitlesCache[id] == null).toList();
+        if(idsToFetch.isNotEmpty) {
+          for (int i = 0; i < idsToFetch.length; i += 10) {
+            final chunk = idsToFetch.sublist(i, math.min(i + 10, idsToFetch.length));
+            final interestsSnap = await FirebaseFirestore.instance.collection('interests').where(FieldPath.documentId, whereIn: chunk).get();
+            for(final doc in interestsSnap.docs) {
+              interestTitlesCache[doc.id] = (doc.data()['title'] ?? '').toString();
+            }
+          }
+        }
+        for(final id in interestIds) {
+          if(interestTitlesCache[id.toString()] != null && interestTitlesCache[id.toString()]!.isNotEmpty) {
+            specializations.add(interestTitlesCache[id.toString()]!);
+          }
+        }
+      }
 
       final person = _PersonMini(
         helperId: helperId,
         name: name,
         photoUrl: photoUrl,
-        sessionsWithMe: completedCount,
+        sessionsWithMe: completedAppts.length,
         role: role,
+        bio: bio,
+        specializes: specializations,
       );
 
       if (role == 'peer_counsellor') {
         counsellors.add(person);
-      } else if (role == 'peer_tutor') {
+      } else {
         tutors.add(person);
       }
     }
 
-    // sort: most sessions first
     tutors.sort((a, b) => b.sessionsWithMe.compareTo(a.sessionsWithMe));
     counsellors.sort((a, b) => b.sessionsWithMe.compareTo(a.sessionsWithMe));
 
@@ -1081,19 +1109,24 @@ class _PeopleYouWorkedWith extends StatelessWidget {
         'userId': p.helperId,
         'name': p.name,
         'sessions': p.sessionsWithMe,
-        'match': 'Good Match',
-        'specializes': const <String>[],
+        'match': 'Good Match', // From profile, it's always a good match
+        'specializes': p.specializes, // ** Pass specializations **
+        'bio': p.bio,                 // ** Pass bio **
         'photoUrl': p.photoUrl,
+        'role': p.role,               // ** Pass role **
       },
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final t = Theme.of(context).textTheme;
     return FutureBuilder<Map<String, List<_PersonMini>>>(
       future: _loadPeople(),
       builder: (context, snap) {
+        if(snap.connectionState == ConnectionState.waiting) {
+          return const Center(child: Padding(padding: EdgeInsets.all(16.0), child: CircularProgressIndicator()));
+        }
+
         final tutors = snap.data?['tutors'] ?? const <_PersonMini>[];
         final counsellors = snap.data?['counsellors'] ?? const <_PersonMini>[];
 
@@ -1103,14 +1136,14 @@ class _PeopleYouWorkedWith extends StatelessWidget {
               title: 'My Tutors',
               people: tutors,
               onTap: (p) => _bookAgain(context, p),
-              emptyText: 'No tutors yet.',
+              emptyText: 'Tutors you have completed sessions with will appear here.',
             ),
             const SizedBox(height: 12),
             _PeopleCard(
               title: 'My Counsellors',
               people: counsellors,
               onTap: (p) => _bookAgain(context, p),
-              emptyText: 'No counsellors yet.',
+              emptyText: 'Counsellors you have completed sessions with will appear here.',
             ),
           ],
         );
@@ -1138,8 +1171,11 @@ class _PersonMini {
   final String helperId;
   final String name;
   final String? photoUrl;
-  final int sessionsWithMe; // completed sessions with this student
-  final String role; // peer_tutor | peer_counsellor | peer
+  final int sessionsWithMe;
+  final String role;
+  final String bio;
+  final List<String> specializes;
+
 
   _PersonMini({
     required this.helperId,
@@ -1147,6 +1183,8 @@ class _PersonMini {
     required this.photoUrl,
     required this.sessionsWithMe,
     required this.role,
+    required this.bio,
+    required this.specializes,
   });
 }
 

@@ -20,6 +20,7 @@ class HelperProfile {
   final String name;
   final String faculty;           // resolved faculty title
   final String email;
+  final String bio;               // ** NEW: user's about/bio text
   final List<String> specializes; // interest titles
   final int sessions;             // total (non-cancelled) appointments
   final MatchLevel match;
@@ -31,6 +32,7 @@ class HelperProfile {
     required this.name,
     required this.faculty,
     required this.email,
+    required this.bio,
     required this.specializes,
     required this.sessions,
     required this.match,
@@ -240,6 +242,7 @@ class _StudentFindHelpPageState extends State<StudentFindHelpPage> {
                 name: 'Loading…',
                 faculty: '',
                 email: '',
+                bio: '',
                 specializes: const [],
                 sessions: 0,
                 match: MatchLevel.low,
@@ -278,6 +281,9 @@ class _StudentFindHelpPageState extends State<StudentFindHelpPage> {
 
         final email =
         _pickString(helperData, ['email', 'emailAddress']).ifEmpty('—');
+
+        final bio = (helperData['about'] ?? '').toString();
+
         final facultyId = (helperData['facultyId'] ?? '').toString();
 
         // resolve photo url
@@ -290,7 +296,7 @@ class _StudentFindHelpPageState extends State<StudentFindHelpPage> {
             break;
           }
         }
-        if ((photoUrl == null || photoUrl.isEmpty) &&
+        if ((photoUrl == null || photoUrl!.isEmpty) &&
             helperData['profile'] is Map<String, dynamic>) {
           final prof = helperData['profile'] as Map<String, dynamic>;
           for (final k in possiblePhotoKeys) {
@@ -312,6 +318,7 @@ class _StudentFindHelpPageState extends State<StudentFindHelpPage> {
               name: name,
               faculty: facultyTitle,
               email: email,
+              bio: bio,
               specializes: titles,
               sessions: totalNonCancelled, // non-cancelled
               match: match,
@@ -346,11 +353,13 @@ class _StudentFindHelpPageState extends State<StudentFindHelpPage> {
         'name': p.name,
         'faculty': p.faculty,
         'email': p.email,
-        'sessions': p.sessions, // pass live session count forward
+        'bio': p.bio,
+        'sessions': p.sessions,
         'match': _matchLabel(p.match),
         'specializes': p.specializes,
         'userId': p.userId,
         'photoUrl': p.photoUrl,
+        'role': _roleString, // ** Pass role for session types
       },
     );
   }
@@ -768,14 +777,9 @@ class _HelperCard extends StatelessWidget {
   const _HelperCard({required this.p, required this.onBook});
 
   void _openProfile(BuildContext context) {
-    // Open the peer’s profile page
-    Navigator.pushNamed(
-      context,
-      '/peer/profile',
-      arguments: {
-        'userId': p.userId,
-      },
-    );
+    // This will navigate to a generic peer profile viewer, not implemented here.
+    // For now, it could show a dialog or just do nothing.
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Viewing ${p.name}'s profile.")));
   }
 
   @override
@@ -784,9 +788,9 @@ class _HelperCard extends StatelessWidget {
     const borderClr = Color(0xFFDDE6FF);
 
     final (chipText, chipBg, chipFg) = switch (p.match) {
-      MatchLevel.best => ('Best Match', Color(0xFFC9F2D9), Color(0xFF1B5E20)),
-      MatchLevel.good => ('Good Match', Color(0xFFFCE8C1), Color(0xFF6D4C00)),
-      MatchLevel.low => ('Low Match', Color(0xFFE4E6EB), Color(0xFF424242)),
+      MatchLevel.best => ('Best Match', const Color(0xFFC9F2D9), const Color(0xFF1B5E20)),
+      MatchLevel.good => ('Good Match', const Color(0xFFFCE8C1), const Color(0xFF6D4C00)),
+      MatchLevel.low => ('Low Match', const Color(0xFFE4E6EB), const Color(0xFF424242)),
     };
 
     final bookBtn = ElevatedButton(
@@ -837,7 +841,12 @@ class _HelperCard extends StatelessWidget {
           const SizedBox(height: 6),
           _SpecializeLine(items: p.specializes),
           const SizedBox(height: 6),
-          Text('Bio: N/A', style: t.bodySmall),
+          Text(
+            'Bio: ${p.bio.isEmpty ? "N/A" : p.bio}',
+            style: t.bodySmall,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
         ],
       ),
     );

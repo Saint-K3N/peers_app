@@ -2,6 +2,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 
 class StudentMakeAppointmentPage extends StatefulWidget {
   const StudentMakeAppointmentPage({super.key});
@@ -30,20 +31,30 @@ class _StudentMakeAppointmentPageState extends State<StudentMakeAppointmentPage>
   final _notesCtrl = TextEditingController();
   bool _saving = false;
 
+  final List<String> _tutorSessionTypes = const [
+    'Assignment Discussion', 'Study Strategy', 'Exam Revision', 'Q&A / Doubts'
+  ];
+  final List<String> _counsellorSessionTypes = const [
+    'Stress & Anxiety Management', 'Academic Pressure', 'Personal Growth', 'Relationship Advice'
+  ];
+
   @override
   void dispose() {
     _notesCtrl.dispose();
     super.dispose();
   }
 
-  String _fmtDate(DateTime d) =>
-      '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}';
+  String _fmtDate(DateTime d) {
+    // Note: DateTime objects are timezone-aware to the device's local settings.
+    // For GMT+8 (Kuala Lumpur), the device's timezone should be set accordingly.
+    return DateFormat('dd/MM/yyyy').format(d);
+  }
 
   String _fmtTime(TimeOfDay t) {
-    final h = t.hourOfPeriod == 0 ? 12 : t.hourOfPeriod;
-    final m = t.minute.toString().padLeft(2, '0');
-    final ap = t.period == DayPeriod.am ? 'AM' : 'PM';
-    return '$h:$m $ap';
+    // This format is independent of timezone and represents the time of day.
+    final now = DateTime.now();
+    final dt = DateTime(now.year, now.month, now.day, t.hour, t.minute);
+    return DateFormat.jm().format(dt); // e.g., 5:08 PM
   }
 
   DateTime _combine(DateTime date, TimeOfDay tod) =>
@@ -190,6 +201,7 @@ class _StudentMakeAppointmentPageState extends State<StudentMakeAppointmentPage>
 
     final args = (ModalRoute.of(context)?.settings.arguments as Map?) ?? {};
     final helperId = (args['userId'] as String?) ?? '';
+    final role = (args['role'] as String?) ?? 'peer_tutor';
     if (helperId.isEmpty) {
       _msg('Missing helper information.');
       return;
@@ -215,17 +227,18 @@ class _StudentMakeAppointmentPageState extends State<StudentMakeAppointmentPage>
       final appt = <String, dynamic>{
         'studentId': student.uid,
         'helperId': helperId,
+        'role': role, // ** Save the role for display purposes **
         'date': Timestamp.fromDate(DateTime(_date!.year, _date!.month, _date!.day)),
         'startAt': Timestamp.fromDate(startDt),
         'endAt': Timestamp.fromDate(endDt),
         'sessionType': _sessionType,
         'mode': _mode,
         'venue': _mode == 'physical' ? _venue : null,
-        'location': location, // nice display string used by tiles
+        'location': location,
         'notes': _notesCtrl.text.trim(),
         'status': 'pending',
-        'createdAt': Timestamp.fromDate(now),
-        'updatedAt': Timestamp.fromDate(now),
+        'createdAt': Timestamp.now(),
+        'updatedAt': Timestamp.now(),
       };
 
       await FirebaseFirestore.instance.collection('appointments').add(appt);
@@ -254,7 +267,8 @@ class _StudentMakeAppointmentPageState extends State<StudentMakeAppointmentPage>
     final name = (args?['name'] as String?) ?? '—';
     final faculty = (args?['faculty'] as String?) ?? '—';
     final email = (args?['email'] as String?) ?? '—';
-    final sessionsFallback = (args?['sessions'] as int?) ?? 0; // fallback only
+    final bio = (args?['bio'] as String?) ?? '';
+    final sessionsFallback = (args?['sessions'] as int?) ?? 0;
     final match = (args?['match'] as String?) ?? 'Best Match';
     final specializes =
         (args?['specializes'] as List<dynamic>?)
@@ -262,6 +276,11 @@ class _StudentMakeAppointmentPageState extends State<StudentMakeAppointmentPage>
             .toList() ??
             const <String>[];
     final helperId = (args?['userId'] as String?) ?? '';
+    final role = (args?['role'] as String?) ?? 'peer_tutor';
+    final isTutor = role == 'peer_tutor';
+    final title = isTutor ? 'Tutoring with $name' : 'Counselling with $name';
+
+    final sessionTypes = isTutor ? _tutorSessionTypes : _counsellorSessionTypes;
 
     final (chipBg, chipFg) = switch (match.toLowerCase()) {
       'best match' => (const Color(0xFFC9F2D9), const Color(0xFF1B5E20)),
@@ -284,10 +303,10 @@ class _StudentMakeAppointmentPageState extends State<StudentMakeAppointmentPage>
                   Text('Make an Appointment',
                       style: t.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
                   const SizedBox(height: 4),
-                  Text('Book with selected user', style: t.bodySmall),
+                  Text(title, style: t.bodySmall),
                   const SizedBox(height: 12),
 
-                  // Display card (header is now dynamic)
+                  // Display card
                   Container(
                     decoration: BoxDecoration(
                       color: Colors.white,
@@ -310,8 +329,9 @@ class _StudentMakeAppointmentPageState extends State<StudentMakeAppointmentPage>
                           fallbackName: name,
                           fallbackFaculty: faculty,
                           fallbackEmail: email,
+                          fallbackBio: bio,
                           fallbackSessions: sessionsFallback,
-                          fallbackPhotoUrl: '',
+                          fallbackPhotoUrl: (args?['photoUrl'] as String?) ?? '',
                           specializes: specializes,
                           trailing: _Chip(label: match, bg: chipBg, fg: chipFg),
                         ),
@@ -421,21 +441,12 @@ class _StudentMakeAppointmentPageState extends State<StudentMakeAppointmentPage>
                             isExpanded: true,
                             underline: const SizedBox(),
                             hint: const Text('Session Type'),
-                            items: const [
-                              DropdownMenuItem(
-                                  value: 'Assignment Discussion',
-                                  child: Text('Assignment Discussion')),
-                              DropdownMenuItem(
-                                  value: 'Study Strategy',
-                                  child: Text('Study Strategy')),
-                              DropdownMenuItem(
-                                  value: 'Exam Revision',
-                                  child: Text('Exam Revision')),
-                              DropdownMenuItem(
-                                  value: 'Q&A / Doubts',
-                                  child: Text('Q&A / Doubts')),
-                            ],
-                            onChanged: (v) => setState(() => _sessionType = v),
+                            items: sessionTypes.map((type) => DropdownMenuItem(value: type, child: Text(type))).toList(),
+                            onChanged: (v) {
+                              if(_sessionType != v) {
+                                setState(() => _sessionType = v);
+                              }
+                            },
                           ),
                         ),
                         const SizedBox(height: 8),
@@ -552,21 +563,21 @@ class _StudentMakeAppointmentPageState extends State<StudentMakeAppointmentPage>
 
 class _HelperHeader extends StatelessWidget {
   final String helperId;
-
   final String fallbackName;
   final String fallbackFaculty;
   final String fallbackEmail;
+  final String fallbackBio;
   final int fallbackSessions;
   final String fallbackPhotoUrl;
   final List<String> specializes;
-
-  final Widget? trailing; // e.g. match chip
+  final Widget? trailing;
 
   const _HelperHeader({
     required this.helperId,
     required this.fallbackName,
     required this.fallbackFaculty,
     required this.fallbackEmail,
+    required this.fallbackBio,
     required this.fallbackSessions,
     required this.fallbackPhotoUrl,
     required this.specializes,
@@ -588,14 +599,11 @@ class _HelperHeader extends StatelessWidget {
     return '';
   }
 
-  Future<(String name, String facultyTitle, String email, String photoUrl)>
-  _load() async {
-    String name = fallbackName;
-    String facTitle = fallbackFaculty;
-    String email = fallbackEmail;
-    String photoUrl = fallbackPhotoUrl;
+  Future<(String name, String faculty, String email, String bio, String photo)> _load() async {
+    String name = fallbackName, fac = fallbackFaculty, email = fallbackEmail,
+        bio = fallbackBio, photo = fallbackPhotoUrl;
 
-    if (helperId.isEmpty) return (name, facTitle, email, photoUrl);
+    if (helperId.isEmpty) return (name, fac, email, bio, photo);
 
     final usersCol = FirebaseFirestore.instance.collection('users');
     final facCol = FirebaseFirestore.instance.collection('faculties');
@@ -604,67 +612,44 @@ class _HelperHeader extends StatelessWidget {
       final uSnap = await usersCol.doc(helperId).get();
       final u = uSnap.data() ?? {};
 
-      final pickedName =
-      _pickString(u, ['fullName', 'full_name', 'name', 'displayName', 'display_name']);
-      if (pickedName.isNotEmpty) name = pickedName;
+      final pName = _pickString(u, ['fullName', 'name', 'displayName']);
+      if(pName.isNotEmpty) name = pName;
 
-      final pickedEmail = _pickString(u, ['email', 'emailAddress']);
-      if (pickedEmail.isNotEmpty) email = pickedEmail;
+      final pEmail = _pickString(u, ['email', 'emailAddress']);
+      if(pEmail.isNotEmpty) email = pEmail;
 
-      // photo
-      final possiblePhotoKeys = ['photoURL', 'photoUrl', 'avatarUrl', 'avatar'];
-      for (final k in possiblePhotoKeys) {
-        final v = u[k];
-        if (v is String && v.trim().isNotEmpty) {
-          photoUrl = v.trim();
-          break;
-        }
+      final pBio = (u['about'] ?? '').toString();
+      if(pBio.isNotEmpty) bio = pBio;
+
+      final pPhoto = (u['photoUrl'] ?? u['avatarUrl'] ?? '').toString();
+      if(pPhoto.isNotEmpty) photo = pPhoto;
+
+      final facId = (u['facultyId'] ?? '').toString();
+      if (facId.isNotEmpty) {
+        final fSnap = await facCol.doc(facId).get();
+        final t = (fSnap.data()?['title'] ?? fSnap.data()?['name'] ?? '').toString();
+        if (t.isNotEmpty) fac = t;
       }
-      if (photoUrl.isEmpty && u['profile'] is Map<String, dynamic>) {
-        final prof = u['profile'] as Map<String, dynamic>;
-        for (final k in possiblePhotoKeys) {
-          final v = prof[k];
-          if (v is String && v.trim().isNotEmpty) {
-            photoUrl = v.trim();
-            break;
-          }
-        }
-      }
-
-      // faculty title
-      final facultyId = (u['facultyId'] ?? '').toString();
-      if (facultyId.isNotEmpty) {
-        final fSnap = await facCol.doc(facultyId).get();
-        final fm = fSnap.data() ?? {};
-        final t = (fm['title'] ?? fm['name'] ?? '').toString().trim();
-        if (t.isNotEmpty) facTitle = t;
-      }
-    } catch (_) {
-      // keep fallbacks
-    }
-
-    return (name, facTitle, email, photoUrl);
+    } catch (_) {}
+    return (name, fac, email, bio, photo);
   }
 
   @override
   Widget build(BuildContext context) {
     final t = Theme.of(context).textTheme;
 
-    return FutureBuilder<(String, String, String, String)>(
+    return FutureBuilder<(String, String, String, String, String)>(
       future: _load(),
       builder: (context, snap) {
-        final data = snap.data ??
-            (fallbackName, fallbackFaculty, fallbackEmail, fallbackPhotoUrl);
+        final data = snap.data ?? (fallbackName, fallbackFaculty, fallbackEmail, fallbackBio, fallbackPhotoUrl);
 
         final avatar = Column(
           children: [
             CircleAvatar(
               radius: 22,
               backgroundColor: Colors.grey.shade300,
-              backgroundImage: data.$4.isNotEmpty ? NetworkImage(data.$4) : null,
-              child: data.$4.isEmpty
-                  ? const Icon(Icons.person, color: Colors.white)
-                  : null,
+              backgroundImage: data.$5.isNotEmpty ? NetworkImage(data.$5) : null,
+              child: data.$5.isEmpty ? const Icon(Icons.person, color: Colors.white) : null,
             ),
             const SizedBox(height: 6),
             _SessionsBadge(helperId: helperId, fallback: fallbackSessions),
@@ -674,14 +659,18 @@ class _HelperHeader extends StatelessWidget {
         final info = Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(data.$1,
-                style: t.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
+            Text(data.$1, style: t.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
             Text(data.$2.isEmpty ? '—' : data.$2, style: t.bodySmall),
             Text(data.$3.isEmpty ? '—' : data.$3, style: t.bodySmall),
             const SizedBox(height: 6),
             _SpecializeLine(items: specializes),
             const SizedBox(height: 4),
-            Text('Bio: N/A', style: t.bodySmall),
+            Text(
+                'Bio: ${data.$4.isEmpty ? "N/A" : data.$4}',
+                style: t.bodySmall,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis
+            ),
           ],
         );
 
@@ -721,6 +710,7 @@ class _HelperHeader extends StatelessWidget {
   }
 }
 
+
 /* ----------------------- Live sessions badge widget ----------------------- */
 
 class _SessionsBadge extends StatelessWidget {
@@ -747,7 +737,7 @@ class _SessionsBadge extends StatelessWidget {
           for (final d in snap.data!.docs) {
             final status =
             (d.data()['status'] ?? '').toString().toLowerCase().trim();
-            if (status == 'cancelled') continue; // count pending/confirmed/completed
+            if (status == 'cancelled') continue;
             count++;
           }
         }
@@ -775,7 +765,6 @@ class _StudentHeader extends StatelessWidget {
     final t = Theme.of(context).textTheme;
     return Row(
       children: [
-        // back
         Material(
           color: Colors.white,
           borderRadius: BorderRadius.circular(10),
@@ -794,8 +783,6 @@ class _StudentHeader extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 10),
-
-        // logo
         Container(
           height: 48,
           width: 48,
@@ -817,8 +804,6 @@ class _StudentHeader extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 12),
-
-        // titles
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -835,8 +820,6 @@ class _StudentHeader extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 8),
-
-        // logout (replaces profile circle)
         Material(
           color: Colors.white,
           borderRadius: BorderRadius.circular(10),
