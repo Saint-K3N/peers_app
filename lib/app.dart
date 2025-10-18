@@ -101,7 +101,10 @@ class MyApp extends StatelessWidget {
         // Peer Tutor & Peer Counsellor (FIXED: leading slash)
         '/peer_tutor/booking': (_) => const PeerBookingInfoPage(),
         '/peer_tutor/home': (_) => const PeerTutorHomePage(),
+        '/peer/schedule': (_) => const PeerTutorSchedulePage(),
+        '/peer/booking-info': (_) => const PeerBookingInfoPage(), // FIX for Booking Info missing route
         '/tutor/scheduling': (_) => const PeerTutorSchedulePage(),
+        '/peer_tutor/schedule': (_) => const PeerTutorSchedulePage(), // FIX for Tutor Scheduling missing route
 
         // HOP (FIXED: leading slash)
         '/hop/home': (_) => const HopHomePage(),

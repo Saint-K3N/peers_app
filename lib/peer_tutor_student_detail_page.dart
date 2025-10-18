@@ -2,6 +2,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart'; // For TextInputFormatter
 
 class PeerTutorStudentDetailPage extends StatefulWidget {
   const PeerTutorStudentDetailPage({super.key});
@@ -16,6 +17,9 @@ class _PeerTutorStudentDetailPageState extends State<PeerTutorStudentDetailPage>
   // Progress form controllers (subject + current + dynamic "previous grades")
   final _subjectCtrl = TextEditingController();
   final _currentGradeCtrl = TextEditingController();
+
+  // Max 3 rows for past grades (as per requirement)
+  final int _maxPastRows = 3;
   final List<TextEditingController> _pastLabelCtrls = [];
   final List<TextEditingController> _pastPercentCtrls = [];
 
@@ -27,12 +31,36 @@ class _PeerTutorStudentDetailPageState extends State<PeerTutorStudentDetailPage>
     _ensureMinPastRows(1); // start with one row for previous grades
   }
 
+  // Enforce min 1 row, max _maxPastRows
   void _ensureMinPastRows(int n) {
+    if (n > _maxPastRows) n = _maxPastRows;
+
+    // Add controllers up to n
     while (_pastLabelCtrls.length < n) {
       _pastLabelCtrls.add(TextEditingController());
     }
     while (_pastPercentCtrls.length < n) {
       _pastPercentCtrls.add(TextEditingController());
+    }
+
+    // Keep length <= _maxPastRows (shouldn't happen if called only from _ensureMinPastRows(1) and _addPastRow)
+    while (_pastLabelCtrls.length > _maxPastRows) {
+      _pastLabelCtrls.removeLast().dispose();
+    }
+    while (_pastPercentCtrls.length > _maxPastRows) {
+      _pastPercentCtrls.removeLast().dispose();
+    }
+  }
+
+  void _addPastRow() {
+    if (_pastLabelCtrls.length < _maxPastRows) {
+      _pastLabelCtrls.add(TextEditingController());
+      _pastPercentCtrls.add(TextEditingController());
+      setState(() {});
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Maximum of $_maxPastRows previous grades can be added.')),
+      );
     }
   }
 
@@ -171,14 +199,18 @@ class _PeerTutorStudentDetailPageState extends State<PeerTutorStudentDetailPage>
       return;
     }
 
-    // Collect all "previous grades" rows (label + percent)
+    // Collect all "previous grades" rows (label + percent) up to maxPastRows
     final past = <Map<String, dynamic>>[];
-    final rows = (_pastLabelCtrls.length > _pastPercentCtrls.length)
+    final rows = _pastLabelCtrls.length > _pastPercentCtrls.length
         ? _pastLabelCtrls.length
         : _pastPercentCtrls.length;
-    for (int i=0;i<rows;i++){
+
+    // Only process up to _maxPastRows
+    for (int i = 0; i < rows && i < _maxPastRows; i++) {
       final l = (i < _pastLabelCtrls.length) ? _pastLabelCtrls[i].text.trim() : '';
       final p = (i < _pastPercentCtrls.length) ? num.tryParse(_pastPercentCtrls[i].text.trim()) : null;
+
+      // Only save if both description (label) and percentage (p) are valid
       if (l.isNotEmpty && p != null) {
         past.add({'label': l, 'percent': p});
       }
@@ -190,7 +222,7 @@ class _PeerTutorStudentDetailPageState extends State<PeerTutorStudentDetailPage>
       'tutorId': _tutorUid,
       'subject': subject,
       'currentPercent': currentPct,
-      'pastGrades': past,                // <-- multiple previous grades saved here
+      'pastGrades': past,                // <-- multiple previous grades saved here (max 3)
       'prediction': _passPrediction(currentPct),
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
@@ -206,6 +238,7 @@ class _PeerTutorStudentDetailPageState extends State<PeerTutorStudentDetailPage>
     _subjectCtrl.clear();
     _currentGradeCtrl.clear();
 
+    // Dispose and clear past grade controllers, then re-ensure min 1 row
     for (final c in _pastLabelCtrls) c.dispose();
     for (final c in _pastPercentCtrls) c.dispose();
     _pastLabelCtrls.clear();
@@ -234,12 +267,9 @@ class _PeerTutorStudentDetailPageState extends State<PeerTutorStudentDetailPage>
           currentGradeCtrl: _currentGradeCtrl,
           pastLabelCtrls: _pastLabelCtrls,
           pastPercentCtrls: _pastPercentCtrls,
-          onAddPast: (){
-            _pastLabelCtrls.add(TextEditingController());
-            _pastPercentCtrls.add(TextEditingController());
-            setState((){});
-          },
+          onAddPast: _addPastRow, // Use new _addPastRow logic with max limit
           onSave: ()=>_saveGrade(studentId),
+          maxPastRows: _maxPastRows, // Pass max limit
 
           // helpers
           pickName: _pickName,
@@ -272,6 +302,7 @@ class _Body extends StatelessWidget {
   final List<TextEditingController> pastPercentCtrls;
   final VoidCallback onAddPast;
   final VoidCallback onSave;
+  final int maxPastRows; // New: Max rows limit
 
   // helpers passed in
   final String Function(Map<String, dynamic>) pickName;
@@ -296,6 +327,7 @@ class _Body extends StatelessWidget {
   required this.pastPercentCtrls,
   required this.onAddPast,
   required this.onSave,
+  required this.maxPastRows,
   required this.pickName,
   required this.pickEmail,
   required this.pickAvatar,
@@ -456,6 +488,7 @@ class _Body extends StatelessWidget {
   pastPercentCtrls: pastPercentCtrls,
   onAddPast: onAddPast,
   passPrediction: passPrediction,
+  maxPastRows: maxPastRows, // Pass max limit
   ),
   ],
   );
@@ -825,6 +858,7 @@ class _ProgressSection extends StatelessWidget {
   final List<TextEditingController> pastPercentCtrls;
   final VoidCallback onAddPast;
   final String Function(num?) passPrediction;
+  final int maxPastRows; // New: Max rows limit
 
   const _ProgressSection({
     required this.studentId,
@@ -834,6 +868,7 @@ class _ProgressSection extends StatelessWidget {
     required this.pastPercentCtrls,
     required this.onAddPast,
     required this.passPrediction,
+    required this.maxPastRows, // Added to constructor
   });
 
   @override
@@ -849,6 +884,7 @@ class _ProgressSection extends StatelessWidget {
           pastLabelCtrls: pastLabelCtrls,
           pastPercentCtrls: pastPercentCtrls,
           onAddPast: onAddPast, // <-- Add More button
+          maxPastRows: maxPastRows, // Pass max limit
         ),
         const SizedBox(height: 12),
 
@@ -1002,6 +1038,7 @@ class _ProgressForm extends StatelessWidget {
   final List<TextEditingController> pastLabelCtrls;
   final List<TextEditingController> pastPercentCtrls;
   final VoidCallback onAddPast;
+  final int maxPastRows;
 
   const _ProgressForm({
     required this.subjectCtrl,
@@ -1009,9 +1046,12 @@ class _ProgressForm extends StatelessWidget {
     required this.pastLabelCtrls,
     required this.pastPercentCtrls,
     required this.onAddPast,
+    required this.maxPastRows,
   });
 
   TextEditingController _getOrCreate(List<TextEditingController> list, int index) {
+    // This is primarily defensive; the logic in the stateful widget ensures the lists
+    // have the correct minimum length based on _maxPastRows.
     while (list.length <= index) { list.add(TextEditingController()); }
     return list[index];
   }
@@ -1029,6 +1069,13 @@ class _ProgressForm extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Determine the number of rows to display (should be min 1, max 3)
+    final rowCount = pastLabelCtrls.length > pastPercentCtrls.length
+        ? pastLabelCtrls.length
+        : pastPercentCtrls.length;
+    final displayRows = rowCount < maxPastRows ? rowCount : maxPastRows;
+
+
     return Container(
       decoration: BoxDecoration(
         color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.black12),
@@ -1048,59 +1095,50 @@ class _ProgressForm extends StatelessWidget {
           )),
           const SizedBox(height: 8),
 
-          // First previous grade row
-          Row(
+          // All dynamic rows (now limited to maxPastRows/3)
+          Column(
             children: [
-              Expanded(child: _shell(TextField(
-                controller: _getOrCreate(pastLabelCtrls, 0),
-                decoration: const InputDecoration.collapsed(hintText: 'Subject Name'),
-              ))),
-              const SizedBox(width: 8),
-              Expanded(child: _shell(TextField(
-                controller: _getOrCreate(pastPercentCtrls, 0),
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration.collapsed(hintText: 'Percent (e.g., 86)'),
-              ))),
+              for (int i = 0; i < displayRows; i++) ...[
+                if (i > 0) const SizedBox(height: 6),
+                Row(
+                  children: [
+                    Expanded(child: _shell(TextField(
+                      controller: _getOrCreate(pastLabelCtrls, i),
+                      maxLength: 20, // 20 character limit
+                      inputFormatters: [LengthLimitingTextInputFormatter(20)],
+                      decoration: const InputDecoration(
+                        hintText: 'Description', // Edited label
+                        border: InputBorder.none,
+                        isCollapsed: true,
+                        counterText: '', // Hide default character counter
+                      ),
+                    ))),
+                    const SizedBox(width: 8),
+                    Expanded(child: _shell(TextField(
+                      controller: _getOrCreate(pastPercentCtrls, i),
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration.collapsed(hintText: 'Percent (e.g., 86)'),
+                    ))),
+                  ],
+                ),
+              ]
             ],
           ),
-          const SizedBox(height: 8),
-
-          // Additional dynamic rows (beyond the first)
-          if (pastLabelCtrls.length > 1 || pastPercentCtrls.length > 1)
-            Column(
-              children: [
-                for (int i = 1; i < (pastLabelCtrls.length > pastPercentCtrls.length ? pastLabelCtrls.length : pastPercentCtrls.length); i++) ...[
-                  const SizedBox(height: 6),
-                  Row(
-                    children: [
-                      Expanded(child: _shell(TextField(
-                        controller: _getOrCreate(pastLabelCtrls, i),
-                        decoration: const InputDecoration.collapsed(hintText: 'Subject Name'),
-                      ))),
-                      const SizedBox(width: 8),
-                      Expanded(child: _shell(TextField(
-                        controller: _getOrCreate(pastPercentCtrls, i),
-                        keyboardType: TextInputType.number,
-                        decoration: const InputDecoration.collapsed(hintText: 'Percent'),
-                      ))),
-                    ],
-                  ),
-                ]
-              ],
-            ),
 
           const SizedBox(height: 8),
-          SizedBox(
-            height: 36,
-            child: FilledButton(
-              onPressed: onAddPast,
-              style: FilledButton.styleFrom(
-                backgroundColor: Colors.grey.shade700,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          // Only show 'Add More' if max rows hasn't been reached
+          if (rowCount < maxPastRows)
+            SizedBox(
+              height: 36,
+              child: FilledButton(
+                onPressed: onAddPast,
+                style: FilledButton.styleFrom(
+                  backgroundColor: Colors.grey.shade700,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+                child: const Text('+  Add More'),
               ),
-              child: const Text('+  Add More'),
             ),
-          ),
         ],
       ),
     );

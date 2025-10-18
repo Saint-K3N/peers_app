@@ -972,18 +972,21 @@ class _PeersYouWorkedWith extends StatelessWidget {
         .where('helperId', isEqualTo: helperId)
         .get();
 
-    final byStudent =
+    final completedByStudent =
     <String, List<QueryDocumentSnapshot<Map<String, dynamic>>>>{};
     for (final d in appts.docs) {
       final s = (d['studentId'] ?? '').toString();
-      if (s.isEmpty) continue;
-      (byStudent[s] ??= []).add(d);
+      final status = (d['status'] ?? '').toString().toLowerCase().trim(); // CHECK STATUS
+      if (s.isEmpty || status != 'completed') continue; // ONLY COMPLETED SESSIONS
+      (completedByStudent[s] ??= []).add(d);
     }
-    if (byStudent.isEmpty) return [];
+
+    // Only proceed with students that have at least one completed session
+    if (completedByStudent.isEmpty) return [];
 
     final peers = <_PeerMini>[];
 
-    for (final entry in byStudent.entries) {
+    for (final entry in completedByStudent.entries) {
       final studentId = entry.key;
       final apptsWithStudent = entry.value;
 
@@ -1021,11 +1024,7 @@ class _PeersYouWorkedWith extends StatelessWidget {
         }
       }
 
-      final completedCount = apptsWithStudent
-          .where((a) =>
-      (a['status'] ?? '').toString().toLowerCase().trim() ==
-          'completed')
-          .length;
+      final completedCount = apptsWithStudent.length;
 
       peers.add(_PeerMini(
         peerId: studentId,
@@ -1040,10 +1039,11 @@ class _PeersYouWorkedWith extends StatelessWidget {
   }
 
   void _openPeerDetail(BuildContext context, _PeerMini p) {
+    // Route to the peer counsellor's specific peer detail page
     Navigator.pushNamed(
       context,
-      '/counsellor/peer_detail',
-      arguments: {'peerId': p.peerId, 'userId': p.peerId},
+      '/counsellor/peers/detail', // Use the route from peer_counsellor_peers_page.dart
+      arguments: {'peerId': p.peerId}, // Only 'peerId' is needed for the detail page
     );
   }
 
@@ -1064,7 +1064,7 @@ class _PeersYouWorkedWith extends StatelessWidget {
                   t.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
               const SizedBox(height: 10),
               if (peers.isEmpty)
-                Text('No peers yet.', style: t.bodySmall)
+                Text('No peers yet (only completed sessions count).', style: t.bodySmall) // UPDATED TEXT
               else
                 Wrap(
                   spacing: 12,

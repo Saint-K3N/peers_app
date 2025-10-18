@@ -1,3 +1,4 @@
+// lib/student_home_page.dart
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -31,18 +32,23 @@ class StudentHomePage extends StatelessWidget {
               const _QuickActionsGrid(),
               const SizedBox(height: 20),
 
-              Text("Your Appointments", style: theme.textTheme.titleMedium),
-              const SizedBox(height: 12),
-
+              // The appointments list now handles its own header, filter icon, and state.
               if (uid.isEmpty)
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.black12),
-                  ),
-                  child: const Text('Please sign in to see your appointments.'),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text("Your Appointments", style: theme.textTheme.titleMedium),
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.black12),
+                      ),
+                      child: const Text('Please sign in to see your appointments.'),
+                    ),
+                  ],
                 )
               else
                 _AppointmentsList(uid: uid),
@@ -196,10 +202,12 @@ class _GreetingCardLoader extends StatelessWidget {
           stream: apptsStream,
           builder: (context, apptSnap) {
             final docs = apptSnap.data?.docs ?? const [];
-            int upcoming = docs.where((d) => ['pending', 'confirmed'].contains((d['status'] ?? '').toString().toLowerCase())).length;
-            int completed = docs.where((d) => (d['status'] ?? '').toString().toLowerCase() == 'completed').length;
-            final upcomingDocs = docs.where((d) => ['pending', 'confirmed'].contains((d['status'] ?? '').toString().toLowerCase())).toList();
-            final Set<String> helperIds = upcomingDocs.map((d) => (d['helperId'] ?? '').toString()).where((id) => id.isNotEmpty).toSet();
+            int upcoming = docs.where((d) => ['pending', 'confirmed'].contains((d.data()['status'] ?? '').toString().toLowerCase())).length;
+            int completed = docs.where((d) => (d.data()['status'] ?? '').toString().toLowerCase() == 'completed').length;
+            final upcomingDocs = docs.where((d) => ['pending', 'confirmed'].contains((d.data()['status'] ?? '').toString().toLowerCase())).toList();
+
+            // FIX: Use d.data() for safe field access when generating helperIds
+            final Set<String> helperIds = upcomingDocs.map((d) => (d.data()['helperId'] ?? '').toString()).where((id) => id.isNotEmpty).toSet();
 
             return FutureBuilder<Map<String, String>>(
               future: _helperRolesByIds(helperIds),
@@ -209,9 +217,12 @@ class _GreetingCardLoader extends StatelessWidget {
                 final roles = roleSnap.data ?? const {};
 
                 for (final d in upcomingDocs) {
-                  final hid = (d['helperId'] ?? '').toString();
+                  // FIX: Use d.data() for safe field access to prevent StateError
+                  final apptData = d.data();
+
+                  final hid = (apptData['helperId'] ?? '').toString();
                   // ** Read role from appointment first, then fall back to roles map
-                  final role = (d['role'] as String?) ?? roles[hid] ?? 'peer_tutor';
+                  final role = (apptData['role'] as String?) ?? roles[hid] ?? 'peer_tutor';
                   if (role == 'peer_counsellor') {
                     upcomingCounsellors++;
                   } else {
@@ -392,38 +403,168 @@ class _QuickActionTile extends StatelessWidget {
 
 /* ------------------------------- Appointments ------------------------------ */
 
-class _AppointmentsList extends StatelessWidget {
+enum AppointmentSortMode {
+  nearestDate,
+  statusPriority,
+}
+
+class _AppointmentsList extends StatefulWidget {
   final String uid;
   const _AppointmentsList({required this.uid});
 
   @override
+  State<_AppointmentsList> createState() => _AppointmentsListState();
+}
+
+class _AppointmentsListState extends State<_AppointmentsList> {
+  AppointmentSortMode _sortMode = AppointmentSortMode.nearestDate;
+
+  // Helper to assign priority for status sorting
+  int _getStatusPriority(QueryDocumentSnapshot<Map<String, dynamic>> d) {
+    final status = (d.data()['status'] ?? '').toString().toLowerCase();
+    switch (status) {
+      case 'confirmed':
+        return 1; // Highest priority
+      case 'pending':
+        return 2;
+      case 'cancelled':
+        return 3; // Lowest priority
+      default:
+        return 4;
+    }
+  }
+
+  void _showSortMenu() {
+    final t = Theme.of(context).textTheme;
+    showModalBottomSheet(
+      context: context,
+      builder: (BuildContext context) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                child: Text('Sort Appointments By', style: t.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
+              ),
+              _SortOptionTile(
+                label: 'Nearest Date to Furthest',
+                subtitle: 'Based on appointment start time',
+                selectedMode: _sortMode,
+                currentMode: AppointmentSortMode.nearestDate,
+                onTap: () {
+                  setState(() => _sortMode = AppointmentSortMode.nearestDate);
+                  Navigator.pop(context);
+                },
+              ),
+              _SortOptionTile(
+                label: 'Status Priority',
+                subtitle: 'Confirmed > Pending > Cancelled (Date as tie-breaker)',
+                selectedMode: _sortMode,
+                currentMode: AppointmentSortMode.statusPriority,
+                onTap: () {
+                  setState(() => _sortMode = AppointmentSortMode.statusPriority);
+                  Navigator.pop(context);
+                },
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
     final t = Theme.of(context).textTheme;
-    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance.collection('appointments').where('studentId', isEqualTo: uid).snapshots(),
-      builder: (context, snap) {
-        if (snap.connectionState == ConnectionState.waiting) return const Padding(padding: EdgeInsets.symmetric(vertical: 12), child: Center(child: CircularProgressIndicator()));
-        if (snap.hasError) return Padding(padding: const EdgeInsets.symmetric(vertical: 8), child: Text('Error: ${snap.error}', style: t.bodyMedium?.copyWith(color: Colors.red)));
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text("Your Appointments", style: t.titleMedium),
+            IconButton(
+              icon: const Icon(Icons.filter_list_rounded),
+              onPressed: _showSortMenu,
+              tooltip: 'Sort Appointments',
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
 
-        final now = DateTime.now();
-        final docs = (snap.data?.docs ?? const [])
-            .where((d) {
-          final status = (d.data()['status'] ?? '').toString().toLowerCase();
-          if(status == 'completed') return false; // Hide completed
-          final endTs = d.data()['endAt'];
-          return endTs is Timestamp ? endTs.toDate().isAfter(now) : true;
-        })
-            .toList()
-          ..sort((a, b) {
-            Timestamp? aTs = a.data()['startAt'];
-            Timestamp? bTs = b.data()['startAt'];
-            return (aTs?.millisecondsSinceEpoch ?? 0).compareTo(bTs?.millisecondsSinceEpoch ?? 0);
-          });
+        StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+          stream: FirebaseFirestore.instance.collection('appointments').where('studentId', isEqualTo: widget.uid).snapshots(),
+          builder: (context, snap) {
+            if (snap.connectionState == ConnectionState.waiting) return const Padding(padding: EdgeInsets.symmetric(vertical: 12), child: Center(child: CircularProgressIndicator()));
+            if (snap.hasError) return Padding(padding: const EdgeInsets.symmetric(vertical: 8), child: Text('Error: ${snap.error}', style: t.bodyMedium?.copyWith(color: Colors.red)));
 
-        if (docs.isEmpty) return Container(width: double.infinity, padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.black12)), child: const Text('No upcoming appointments yet.'));
+            final now = DateTime.now();
+            final docs = (snap.data?.docs ?? const [])
+                .where((d) {
+              final status = (d.data()['status'] ?? '').toString().toLowerCase();
+              if(status == 'completed') return false; // Hide completed
+              final endTs = d.data()['endAt'];
+              return endTs is Timestamp ? endTs.toDate().isAfter(now) : true;
+            })
+                .toList()
+              ..sort((a, b) {
+                // Secondary Sort by Date/Time (startAt ascending: Nearest to Furthest)
+                Timestamp? aTs = a.data()['startAt'];
+                Timestamp? bTs = b.data()['startAt'];
+                final dateComparison = (aTs?.millisecondsSinceEpoch ?? 0).compareTo(bTs?.millisecondsSinceEpoch ?? 0);
 
-        return Column(children: [for (final d in docs) ...[ _AppointmentTile(appDoc: d), const SizedBox(height: 12)]]);
-      },
+                if (_sortMode == AppointmentSortMode.statusPriority) {
+                  // 1. Sort by Status: Confirmed -> Pending -> Cancelled
+                  final statusA = _getStatusPriority(a);
+                  final statusB = _getStatusPriority(b);
+                  final statusComparison = statusA.compareTo(statusB);
+
+                  if (statusComparison != 0) {
+                    return statusComparison;
+                  }
+                  // 2. Tie-breaker by Date/Time (startAt ascending)
+                  return dateComparison;
+                } else { // AppointmentSortMode.nearestDate (Default)
+                  // Sort only by Date/Time (startAt ascending)
+                  return dateComparison;
+                }
+              });
+
+            if (docs.isEmpty) return Container(width: double.infinity, padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.black12)), child: const Text('No upcoming appointments yet.'));
+
+            return Column(children: [for (final d in docs) ...[ _AppointmentTile(appDoc: d), const SizedBox(height: 12)]]);
+          },
+        ),
+      ],
+    );
+  }
+}
+
+class _SortOptionTile extends StatelessWidget {
+  final String label;
+  final String subtitle;
+  final AppointmentSortMode selectedMode;
+  final AppointmentSortMode currentMode;
+  final VoidCallback onTap;
+
+  const _SortOptionTile({
+    required this.label,
+    required this.subtitle,
+    required this.selectedMode,
+    required this.currentMode,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isSelected = selectedMode == currentMode;
+    return ListTile(
+      title: Text(label, style: TextStyle(fontWeight: isSelected ? FontWeight.bold : FontWeight.normal)),
+      subtitle: Text(subtitle),
+      trailing: isSelected ? const Icon(Icons.check, color: Colors.blue) : null,
+      onTap: onTap,
     );
   }
 }
@@ -436,10 +577,14 @@ class _AppointmentTile extends StatelessWidget {
   String _fmtTime(TimeOfDay t) => DateFormat.jm().format(DateTime(2025,1,1,t.hour, t.minute));
 
   Future<void> _cancel(BuildContext context, {required String apptId, required DateTime start}) async {
-    final isWithin24Hours = start.difference(DateTime.now()) < const Duration(hours: 24);
+    // isWithin24Hours is no longer needed to choose the dialog, but needed for context if Peers saw it.
+    final now = DateTime.now();
+    final isWithin24Hours = start.difference(now).inHours <= 24;
+
+    // Pass isWithin24Hours for potential future logging/different cancel message, though dialog is now standard.
     final reason = await showDialog<String>(
       context: context,
-      builder: (_) => _CancelDialog(isWithin24Hours: isWithin24Hours),
+      builder: (_) => const _CancelDialog(),
     );
 
     if (reason != null && reason.isNotEmpty && context.mounted) {
@@ -453,7 +598,8 @@ class _AppointmentTile extends StatelessWidget {
   }
 
   Future<void> _reschedule(BuildContext context, {required String apptId, required String helperId, required DateTime currentStart, required DateTime currentEnd}) async {
-    if (currentStart.difference(DateTime.now()) < const Duration(hours: 24)) {
+    // Condition 1: Reschedule not allowed within 24 hours.
+    if (currentStart.difference(DateTime.now()).inHours <= 24) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Reschedule not allowed within 24 hours.')));
       return;
     }
@@ -469,6 +615,7 @@ class _AppointmentTile extends StatelessWidget {
     final String reason = result['reason'];
 
     if (reason.isEmpty) {
+      // This is handled in the dialog's FilledButton's onPressed, but acts as a fallback.
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('A reason is required to reschedule.')));
       return;
     }
@@ -517,6 +664,26 @@ class _AppointmentTile extends StatelessWidget {
       _ => ('Pending', Colors.grey.shade300, Colors.black87),
     };
 
+    // --- CORE LOGIC IMPLEMENTATION (Conditions 1 & 2) ---
+    final bool statusOk = status != 'cancelled' && status != 'completed';
+    final bool isWithin24Hours = start != null && start.difference(DateTime.now()).inHours <= 24;
+
+    bool canReschedule = false;
+    bool canCancel = statusOk;
+
+    if (statusOk && start != null) {
+      if (!isWithin24Hours) {
+        // Condition 2: > 24 hours
+        canReschedule = true;
+      }
+    }
+
+    if (start == null || end == null) {
+      canCancel = false;
+      canReschedule = false;
+    }
+    // --- END: CORE LOGIC IMPLEMENTATION (Conditions 1 & 2) ---
+
     return FutureBuilder(
       future: Future.wait([
         FirebaseFirestore.instance.collection('users').doc(helperId).get(),
@@ -535,8 +702,6 @@ class _AppointmentTile extends StatelessWidget {
 
         final isTutor = role == 'peer_tutor';
         final title = isTutor ? 'Tutoring with $helperName' : 'Counselling with $helperName';
-        final canReschedule = status != 'cancelled' && status != 'completed' && start != null && start.difference(DateTime.now()) >= const Duration(hours: 24);
-        final canCancel = status != 'cancelled' && status != 'completed';
 
         return _ScheduleCard(
           avatarUrl: photoUrl, onAvatarTap: () {/* Navigate to peer profile */},
@@ -546,8 +711,8 @@ class _AppointmentTile extends StatelessWidget {
           borderColor: isTutor ? Colors.transparent : const Color(0xFF2F8D46),
           chipLabel: chipLabel, chipColor: chipBg, chipTextColor: chipFg,
           showCancel: canCancel, showReschedule: canReschedule,
-          onCancel: (start != null) ? () => _cancel(context, apptId: appDoc.id, start: start) : null,
-          onReschedule: (start != null && end != null) ? () => _reschedule(context, apptId: appDoc.id, helperId: helperId, currentStart: start, currentEnd: end) : null,
+          onCancel: (canCancel && start != null) ? () => _cancel(context, apptId: appDoc.id, start: start) : null,
+          onReschedule: (canReschedule && start != null && end != null) ? () => _reschedule(context, apptId: appDoc.id, helperId: helperId, currentStart: start, currentEnd: end) : null,
           onTap: () => Navigator.pushNamed(context, '/student/booking-info', arguments: {'appointmentId': appDoc.id, 'helperId': helperId}),
         );
       },
@@ -613,19 +778,17 @@ class _SmallButton extends StatelessWidget {
   Widget build(BuildContext context) => SizedBox(height: 34, child: FilledButton(style: FilledButton.styleFrom(backgroundColor: color, padding: const EdgeInsets.symmetric(horizontal: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))), onPressed: onPressed, child: Text(label, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600))));
 }
 
-/* ------------------------------ Dialog Widgets (Copied from student_booking_info_page.dart) ------------------------------ */
+/* ------------------------------ Dialog Widgets (Modified) ------------------------------ */
 
 class _CancelDialog extends StatefulWidget {
-  final bool isWithin24Hours;
-  const _CancelDialog({required this.isWithin24Hours});
+  // Removed isWithin24Hours from constructor, but kept the widget separate for potential future use.
+  const _CancelDialog();
   @override
   State<_CancelDialog> createState() => _CancelDialogState();
 }
 
 class _CancelDialogState extends State<_CancelDialog> {
   final _reasonCtrl = TextEditingController();
-  String? _selectedReason;
-  final _predefinedReasons = ['Misclick', 'Too near to appointed date/time'];
 
   @override
   void dispose() {
@@ -641,29 +804,30 @@ class _CancelDialogState extends State<_CancelDialog> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Please provide a reason for cancellation.'),
+          // Simplified instruction text
+          const Text('Please provide a reason for cancellation:'),
           const SizedBox(height: 12),
-          if (widget.isWithin24Hours)
-            DropdownButtonFormField<String>(
-              value: _selectedReason,
-              hint: const Text('Select a reason'),
-              items: _predefinedReasons.map((r) => DropdownMenuItem(value: r, child: Text(r))).toList(),
-              onChanged: (v) => setState(() => _selectedReason = v),
-              decoration: const InputDecoration(border: OutlineInputBorder()),
-            )
-          else
-            TextField(
-              controller: _reasonCtrl,
-              decoration: const InputDecoration(hintText: 'Reason for cancellation', border: OutlineInputBorder()),
-              maxLines: 2,
+          // Single TextField for all conditions
+          TextField(
+            controller: _reasonCtrl,
+            decoration: const InputDecoration(
+              hintText: 'Reason (Max 20 characters)',
+              border: OutlineInputBorder(),
             ),
+            maxLines: 2,
+            maxLength: 20, // Enforce max 20 characters and show counter
+          ),
         ],
       ),
       actions: [
         TextButton(onPressed: () => Navigator.pop(context), child: const Text('Keep')),
         FilledButton(onPressed: () {
-          final reason = widget.isWithin24Hours ? _selectedReason : _reasonCtrl.text.trim();
-          if (reason != null && reason.isNotEmpty) {
+          final reason = _reasonCtrl.text.trim();
+
+          if (reason.isEmpty) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('A reason is required.')));
+          } else {
+            // Reason is guaranteed to be <= 20 chars due to TextField.maxLength
             Navigator.pop(context, reason);
           }
         }, child: const Text('Confirm Cancel')),
@@ -721,7 +885,15 @@ class _RescheduleDialogState extends State<_RescheduleDialog> {
             Expanded(child: ListTile(dense: true, title: const Text('End'), subtitle: Text(_fmtTime(_endTod)), trailing: IconButton(icon: const Icon(Icons.timer_outlined), onPressed: () => _pickTime(false)))),
           ]),
           const SizedBox(height: 12),
-          TextField(controller: _reasonCtrl, decoration: const InputDecoration(hintText: 'Reason for rescheduling', border: OutlineInputBorder()), maxLines: 2),
+          TextField(
+            controller: _reasonCtrl,
+            decoration: const InputDecoration(
+                hintText: 'Reason for rescheduling (Max 20 characters)',
+                border: OutlineInputBorder()
+            ),
+            maxLines: 2,
+            maxLength: 20, // Enforce max 20 characters and show counter
+          ),
         ]),
       ),
       actions: [
@@ -729,9 +901,23 @@ class _RescheduleDialogState extends State<_RescheduleDialog> {
         FilledButton(onPressed: () {
           final start = DateTime(_date.year, _date.month, _date.day, _startTod.hour, _startTod.minute);
           final end = DateTime(_date.year, _date.month, _date.day, _endTod.hour, _endTod.minute);
-          if (end.isBefore(start) || end.isAtSameMomentAs(start)) return;
-          if (start.isBefore(DateTime.now())) return;
-          Navigator.pop(context, {'start': start, 'end': end, 'reason': _reasonCtrl.text.trim()});
+          final reason = _reasonCtrl.text.trim();
+
+          if (end.isBefore(start) || end.isAtSameMomentAs(start)) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('End time must be after start time.')));
+            return;
+          }
+          if (start.isBefore(DateTime.now())) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('New time must be in the future.')));
+            return;
+          }
+          // The maxLength prevents > 20 chars, so we only need to check for empty.
+          if (reason.isEmpty) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('A reason is required.')));
+            return;
+          }
+
+          Navigator.pop(context, {'start': start, 'end': end, 'reason': reason});
         }, child: const Text('Save')),
       ],
     );

@@ -59,11 +59,12 @@ class _StudentBookingInfoPageState extends State<StudentBookingInfoPage> {
 
   Future<void> _cancelWithReason(String appointmentId, DateTime startAt) async {
     final now = DateTime.now();
-    final isWithin24Hours = startAt.difference(now) < const Duration(hours: 24);
+    // isWithin24Hours is no longer needed to choose the dialog, but preserved for context/logging.
+    final isWithin24Hours = startAt.difference(now).inHours <= 24;
 
     final reason = await showDialog<String>(
       context: context,
-      builder: (_) => _CancelDialog(isWithin24Hours: isWithin24Hours),
+      builder: (_) => const _CancelDialog(),
     );
 
     if (reason != null && reason.isNotEmpty && mounted) {
@@ -88,7 +89,8 @@ class _StudentBookingInfoPageState extends State<StudentBookingInfoPage> {
         required String apptId, required String helperId,
         required DateTime currentStart, required DateTime currentEnd,
       }) async {
-    if (currentStart.difference(DateTime.now()) < const Duration(hours: 24)) {
+    // Condition 1: Reschedule not allowed within 24 hours.
+    if (currentStart.difference(DateTime.now()).inHours <= 24) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Reschedule not allowed within 24 hours.')));
       }
@@ -107,6 +109,7 @@ class _StudentBookingInfoPageState extends State<StudentBookingInfoPage> {
     final String reason = result['reason'];
 
     if (reason.isEmpty) {
+      // This is handled in the dialog's FilledButton's onPressed, but acts as a fallback.
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('A reason is required to reschedule.')));
       return;
     }
@@ -205,10 +208,35 @@ class _StudentBookingInfoPageState extends State<StudentBookingInfoPage> {
                   final statusLbl = _statusLabel(statusRaw);
                   final (chipBg, chipFg) = _statusColors(statusRaw);
 
-                  final canModify = start != null && start.difference(DateTime.now()) >= const Duration(hours: 24);
-                  final statusOk = statusRaw.toLowerCase() == 'pending' || statusRaw.toLowerCase() == 'confirmed';
-                  final canReschedule = statusOk && canModify;
-                  final canCancel = statusOk;
+                  // NEW: Retrieve cancellation reason
+                  final cancellationReason = (m['cancellationReason'] ?? '').toString().trim();
+
+                  // --- CORE LOGIC IMPLEMENTATION (Conditions 1 & 2) ---
+
+                  final bool isConfirmed = statusRaw.toLowerCase() == 'confirmed';
+                  final bool isCancelled = statusRaw.toLowerCase() == 'cancelled'; // New flag for cancellation check
+                  final bool statusOk = statusRaw.toLowerCase() == 'pending' || isConfirmed;
+
+                  // Use .inHours <= 24 for clean logic covering Condition 1 (less than or equal to)
+                  final bool isWithin24Hours = start != null && start.difference(DateTime.now()).inHours <= 24;
+
+                  bool canReschedule = false;
+                  bool canCancel = statusOk; // Student can always cancel if status is active/pending/confirmed
+
+                  if (statusOk && start != null) {
+                    if (!isWithin24Hours) {
+                      // Condition 2: > 24 hours
+                      canReschedule = true;
+                    }
+                  }
+
+                  // Final checks before rendering
+                  if (start == null || end == null) {
+                    canCancel = false;
+                    canReschedule = false;
+                  }
+
+                  // --- END: CORE LOGIC IMPLEMENTATION (Conditions 1 & 2) ---
 
                   return Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -225,6 +253,18 @@ class _StudentBookingInfoPageState extends State<StudentBookingInfoPage> {
                         ],
                       ),
                       const SizedBox(height: 12),
+
+                      // NEW: Display Cancellation Reason if cancelled
+                      if (isCancelled && cancellationReason.isNotEmpty) ...[
+                        _ReasonContainer(
+                          label: 'Cancellation Reason',
+                          reason: cancellationReason,
+                          isAlert: true, // Use alert styling for cancellation
+                        ),
+                        const SizedBox(height: 12),
+                      ],
+                      // End of NEW logic
+
                       _FieldShell(child: Row(children: [ Expanded(child: Text((start != null) ? _fmtDate(start) : '—', style: t.bodyMedium)), const Icon(Icons.calendar_month_outlined)])),
                       const SizedBox(height: 8),
                       _FieldShell(child: Row(children: [ Expanded(child: Text((start != null && end != null) ? '${_fmtTime(TimeOfDay.fromDateTime(start))}  to  ${_fmtTime(TimeOfDay.fromDateTime(end))}' : '—', style: t.bodyMedium)), const Icon(Icons.timer_outlined)])),
@@ -245,17 +285,20 @@ class _StudentBookingInfoPageState extends State<StudentBookingInfoPage> {
                           Wrap(
                             spacing: 8,
                             children: [
-                              if (canReschedule && start != null && end != null)
-                                FilledButton.tonal(
-                                  onPressed: () => _rescheduleWithReason(context, apptId: _appointmentId!, helperId: helperIdFromDoc.isNotEmpty ? helperIdFromDoc : _helperId, currentStart: start, currentEnd: end),
-                                  child: const Text('Reschedule'),
-                                ),
-                              if (canCancel && start != null)
-                                FilledButton(
-                                  style: FilledButton.styleFrom(backgroundColor: Colors.red),
-                                  onPressed: () => _cancelWithReason(_appointmentId!, start),
-                                  child: const Text('Cancel Booking'),
-                                ),
+                              // Only show buttons if not cancelled
+                              if (!isCancelled) ...[
+                                if (canReschedule && start != null && end != null) // Use new canReschedule flag
+                                  FilledButton.tonal(
+                                    onPressed: () => _rescheduleWithReason(context, apptId: _appointmentId!, helperId: helperIdFromDoc.isNotEmpty ? helperIdFromDoc : _helperId, currentStart: start, currentEnd: end),
+                                    child: const Text('Reschedule'),
+                                  ),
+                                if (canCancel && start != null) // Use new canCancel flag
+                                  FilledButton(
+                                    style: FilledButton.styleFrom(backgroundColor: Colors.red),
+                                    onPressed: () => _cancelWithReason(_appointmentId!, start),
+                                    child: const Text('Cancel Booking'),
+                                  ),
+                              ],
                             ],
                           ),
                         ],
@@ -416,17 +459,57 @@ class _SpecializeLine extends StatelessWidget {
   }
 }
 
+class _ReasonContainer extends StatelessWidget {
+  final String label;
+  final String reason;
+  final bool isAlert;
+
+  const _ReasonContainer({required this.label, required this.reason, this.isAlert = false});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = Theme.of(context).textTheme;
+    final bgColor = isAlert ? const Color(0xFFFFE0E0) : const Color(0xFFE3F2FD); // Red for cancel, Blue for general/reschedule
+    final borderColor = isAlert ? const Color(0xFFD32F2F) : const Color(0xFF1565C0);
+    final labelColor = isAlert ? const Color(0xFFD32F2F) : const Color(0xFF1565C0);
+
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: borderColor, width: 1),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: t.labelMedium?.copyWith(fontWeight: FontWeight.w700, color: labelColor)),
+          const SizedBox(height: 4),
+          Text(reason.ifEmpty('—'), style: t.bodyMedium),
+        ],
+      ),
+    );
+  }
+}
+
+/* ------------------------------ Dialog Widgets ------------------------------ */
+
 class _CancelDialog extends StatefulWidget {
-  final bool isWithin24Hours;
-  const _CancelDialog({required this.isWithin24Hours});
+  const _CancelDialog();
   @override
   State<_CancelDialog> createState() => _CancelDialogState();
 }
 
 class _CancelDialogState extends State<_CancelDialog> {
   final _reasonCtrl = TextEditingController();
-  String? _selectedReason;
-  final _predefinedReasons = ['Misclick', 'Too near to appointed date/time'];
+
+  @override
+  void dispose() {
+    _reasonCtrl.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
@@ -435,29 +518,30 @@ class _CancelDialogState extends State<_CancelDialog> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Please provide a reason for cancellation.'),
+          // Simplified instruction text
+          const Text('Please provide a reason for cancellation:'),
           const SizedBox(height: 12),
-          if (widget.isWithin24Hours)
-            DropdownButtonFormField<String>(
-              value: _selectedReason,
-              hint: const Text('Select a reason'),
-              items: _predefinedReasons.map((r) => DropdownMenuItem(value: r, child: Text(r))).toList(),
-              onChanged: (v) => setState(() => _selectedReason = v),
-              decoration: const InputDecoration(border: OutlineInputBorder()),
-            )
-          else
-            TextField(
-              controller: _reasonCtrl,
-              decoration: const InputDecoration(hintText: 'Reason for cancellation', border: OutlineInputBorder()),
-              maxLines: 2,
+          // Single TextField for all conditions
+          TextField(
+            controller: _reasonCtrl,
+            decoration: const InputDecoration(
+                hintText: 'Reason (Max 20 characters)',
+                border: OutlineInputBorder()
             ),
+            maxLines: 2,
+            maxLength: 20, // Enforce max 20 characters and show counter
+          ),
         ],
       ),
       actions: [
         TextButton(onPressed: () => Navigator.pop(context), child: const Text('Keep')),
         FilledButton(onPressed: () {
-          final reason = widget.isWithin24Hours ? _selectedReason : _reasonCtrl.text.trim();
-          if (reason != null && reason.isNotEmpty) {
+          final reason = _reasonCtrl.text.trim();
+
+          if (reason.isEmpty) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('A reason is required.')));
+          } else {
+            // Reason is guaranteed to be <= 20 chars due to TextField.maxLength
             Navigator.pop(context, reason);
           }
         }, child: const Text('Confirm Cancel')),
@@ -486,6 +570,12 @@ class _RescheduleDialogState extends State<_RescheduleDialog> {
     _endTod = TimeOfDay.fromDateTime(widget.currentEnd);
   }
 
+  @override
+  void dispose() {
+    _reasonCtrl.dispose();
+    super.dispose();
+  }
+
   String _fmtTime(TimeOfDay t) => DateFormat.jm().format(DateTime(2025,1,1,t.hour, t.minute));
 
   Future<void> _pickDate() async {
@@ -509,7 +599,15 @@ class _RescheduleDialogState extends State<_RescheduleDialog> {
             Expanded(child: ListTile(dense: true, title: const Text('End'), subtitle: Text(_fmtTime(_endTod)), trailing: IconButton(icon: const Icon(Icons.timer_outlined), onPressed: () => _pickTime(false)))),
           ]),
           const SizedBox(height: 12),
-          TextField(controller: _reasonCtrl, decoration: const InputDecoration(hintText: 'Reason for rescheduling', border: OutlineInputBorder()), maxLines: 2),
+          TextField(
+            controller: _reasonCtrl,
+            decoration: const InputDecoration(
+                hintText: 'Reason for rescheduling (Max 20 characters)',
+                border: OutlineInputBorder()
+            ),
+            maxLines: 2,
+            maxLength: 20, // Enforce max 20 characters and show counter
+          ),
         ]),
       ),
       actions: [
@@ -517,11 +615,29 @@ class _RescheduleDialogState extends State<_RescheduleDialog> {
         FilledButton(onPressed: () {
           final start = DateTime(_date.year, _date.month, _date.day, _startTod.hour, _startTod.minute);
           final end = DateTime(_date.year, _date.month, _date.day, _endTod.hour, _endTod.minute);
-          if (end.isBefore(start) || end.isAtSameMomentAs(start)) return;
-          if (start.isBefore(DateTime.now())) return;
-          Navigator.pop(context, {'start': start, 'end': end, 'reason': _reasonCtrl.text.trim()});
+          final reason = _reasonCtrl.text.trim();
+
+          if (end.isBefore(start) || end.isAtSameMomentAs(start)) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('End time must be after start time.')));
+            return;
+          }
+          if (start.isBefore(DateTime.now())) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('New time must be in the future.')));
+            return;
+          }
+          if (reason.isEmpty) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('A reason is required.')));
+            return;
+          }
+
+          Navigator.pop(context, {'start': start, 'end': end, 'reason': reason});
         }, child: const Text('Save')),
       ],
     );
   }
+}
+
+// Utility extension for display logic
+extension on String {
+  String ifEmpty(String fallback) => isEmpty ? fallback : this;
 }

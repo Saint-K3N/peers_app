@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:intl/intl.dart';
 
 class PeerTutorHomePage extends StatelessWidget {
   const PeerTutorHomePage({super.key});
@@ -211,6 +212,9 @@ class _GreetingLoader extends StatelessWidget {
               final m = d.data();
               final status = (m['status'] ?? 'pending').toString().toLowerCase().trim();
 
+              // Check for appointments that require action from the Peer (pending or pending reschedule from student)
+              final isPendingAction = status == 'pending' || status == 'pending_reschedule_student';
+
               // consider future only (endAt if present, else startAt)
               DateTime? end;
               final endTs = m['endAt'];
@@ -223,7 +227,7 @@ class _GreetingLoader extends StatelessWidget {
               final isFuture = (end == null) || end.isAfter(now);
               if (!isFuture) continue;
 
-              if (status == 'pending') pending++;
+              if (isPendingAction) pending++;
               if (status == 'confirmed') upcoming++;
             }
 
@@ -295,7 +299,8 @@ class _GreetingCardTutor extends StatelessWidget {
               Expanded(
                 child: _StatTile(
                   value: '$pending',
-                  label: 'Pending Requests',
+                  // Label updated to reflect new pending states
+                  label: 'Pending Requests & Reschedules',
                   onTap: onTapPending,
                 ),
               ),
@@ -350,7 +355,7 @@ class _QuickActionsGrid extends StatelessWidget {
     final items = <_QuickAction>[
       _QuickAction(
         color: const Color(0xFFE3F2FD), iconColor: const Color(0xFF1565C0),
-        icon: Icons.event_note_outlined, label: 'Scheduling', route: '/tutor/scheduling',
+        icon: Icons.event_note_outlined, label: 'Scheduling', route: '/peer/schedule',
       ),
       _QuickAction(
         color: const Color(0xFFE6FFFB), iconColor: const Color(0xFF159C8C),
@@ -429,7 +434,7 @@ class _QuickActionTile extends StatelessWidget {
   }
 }
 
-/* ---------------------------- Today's Schedule List ------------------------ */
+/* ---------------------------- Today's Schedule List (Scenario 1) ------------------------ */
 
 class _TodayScheduleList extends StatelessWidget {
   final String helperUid;
@@ -463,8 +468,8 @@ class _TodayScheduleList extends StatelessWidget {
           final sameDay = dt.year == now.year && dt.month == now.month && dt.day == now.day;
 
           final status = (m['status'] ?? 'pending').toString().toLowerCase().trim();
-          // show "active" items (pending/confirmed) even if earlier today (to allow outcomes)
-          final active = status == 'pending' || status == 'confirmed';
+          // show "active" items (pending/confirmed/reschedule_pending) even if earlier today (to allow outcomes)
+          final active = status == 'pending' || status == 'confirmed' || status.startsWith('pending_reschedule');
           return sameDay && active;
         })
             .toList()
@@ -494,28 +499,58 @@ class _TodayScheduleList extends StatelessWidget {
   }
 }
 
-/* ------------------------------ Schedule Tile ----------------------------- */
+/* ------------------------------ Schedule Tile (Scenario 1 Implementation) ----------------------------- */
 
 class _TutorScheduleTile extends StatelessWidget {
   final QueryDocumentSnapshot<Map<String, dynamic>> appDoc;
   const _TutorScheduleTile({required this.appDoc});
 
-  String _fmtDate(DateTime d) => '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}';
+  String _fmtDate(DateTime d) => DateFormat('dd/MM/yyyy').format(d);
   String _fmtTime(TimeOfDay t) {
-    final h = t.hourOfPeriod == 0 ? 12 : t.hourOfPeriod;
-    final m = t.minute.toString().padLeft(2, '0');
-    final ap = t.period == DayPeriod.am ? 'AM' : 'PM';
-    return '$h:$m $ap';
+    final now = DateTime.now();
+    final dt = DateTime(now.year, now.month, now.day, t.hour, t.minute);
+    return DateFormat.jm().format(dt);
+  }
+
+  String _pickStudentName(Map<String, dynamic> m) {
+    String pick(Map<String, dynamic> x, List<String> keys) {
+      for (final k in keys) {
+        final v = x[k];
+        if (v is String && v.trim().isNotEmpty) return v.trim();
+      }
+      return '';
+    }
+    final direct = pick(m, const ['fullName', 'full_name', 'name', 'displayName', 'display_name']);
+    if (direct.isNotEmpty) return direct;
+    final profile = (m['profile'] is Map) ? (m['profile'] as Map).cast<String, dynamic>() : null;
+    if (profile != null) {
+      final p = pick(profile, const ['fullName', 'full_name', 'name', 'displayName', 'display_name']);
+      if (p.isNotEmpty) return p;
+    }
+    return 'Student';
   }
 
   /* -------------------- Shared Firestore helpers -------------------- */
 
-  Future<void> _updateStatus(BuildContext context, String id, String status) async {
+  Future<void> _updateStatus(BuildContext context, String id, String status, {String? cancellationReason}) async {
     try {
-      await FirebaseFirestore.instance.collection('appointments').doc(id).update({
+      final updateData = {
         'status': status,
         'updatedAt': FieldValue.serverTimestamp(),
-      });
+        // Clear reschedule-related fields upon successful final status update
+        'proposedStartAt': FieldValue.delete(),
+        'proposedEndAt': FieldValue.delete(),
+        'rescheduleReasonPeer': FieldValue.delete(),
+        'rescheduleReasonStudent': FieldValue.delete(),
+        if (cancellationReason != null) 'cancellationReason': cancellationReason,
+        if (cancellationReason != null) 'cancelledBy': 'helper',
+      };
+
+      await FirebaseFirestore.instance.collection('appointments').doc(id).set(
+        updateData,
+        SetOptions(merge: true),
+      );
+
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Status updated to $status.')));
       }
@@ -526,260 +561,96 @@ class _TutorScheduleTile extends StatelessWidget {
     }
   }
 
-  Future<void> _markCompleted(BuildContext context, String id) async {
-    try {
-      final doc = await FirebaseFirestore.instance.collection('appointments').doc(id).get();
-      final m = doc.data() ?? {};
-      final ts = m['startAt'];
-      if (ts is! Timestamp) return;
-      final start = ts.toDate();
-      if (DateTime.now().isBefore(start)) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('You can mark outcome only after the appointment time.')),
-          );
-        }
-        return;
-      }
-      await _updateStatus(context, id, 'completed');
-    } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: $e')));
-      }
-    }
-  }
-
-  Future<void> _markMissed(BuildContext context, String id) async {
-    try {
-      final doc = await FirebaseFirestore.instance.collection('appointments').doc(id).get();
-      final m = doc.data() ?? {};
-      final ts = m['startAt'];
-      if (ts is! Timestamp) return;
-      final start = ts.toDate();
-      if (DateTime.now().isBefore(start)) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('You can mark outcome only after the appointment time.')),
-          );
-        }
-        return;
-      }
-      await _updateStatus(context, id, 'missed');
-    } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed: $e')));
-      }
-    }
-  }
-
-  Future<bool> _hasOverlap({
-    required String helperId,
-    required DateTime startDt,
-    required DateTime endDt,
-    required String excludeId,
-  }) async {
-    final snap = await FirebaseFirestore.instance
-        .collection('appointments')
-        .where('helperId', isEqualTo: helperId)
-        .limit(500)
-        .get();
-
-    for (final d in snap.docs) {
-      if (d.id == excludeId) continue;
-      final m = d.data();
-      final status = (m['status'] ?? '').toString().toLowerCase();
-      if (status != 'pending' && status != 'confirmed') continue;
-      final tsStart = m['startAt'];
-      final tsEnd   = m['endAt'];
-      if (tsStart is! Timestamp || tsEnd is! Timestamp) continue;
-      final existingStart = tsStart.toDate();
-      final existingEnd   = tsEnd.toDate();
-      final overlaps = existingStart.isBefore(endDt) && existingEnd.isAfter(startDt);
-      if (overlaps) return true;
-    }
-    return false;
-  }
-
-  /* -------------------- Actions with policy guards -------------------- */
-
-  Future<void> _reschedule(BuildContext context, Map<String, dynamic> m) async {
-    final apptId   = appDoc.id;
-    final helperId = (m['helperId'] ?? '').toString();
-
-    final origStart = (m['startAt'] is Timestamp) ? (m['startAt'] as Timestamp).toDate() : null;
-    final origEnd   = (m['endAt']   is Timestamp) ? (m['endAt']   as Timestamp).toDate() : null;
-
-    // Block reschedule if within 24 hours of the ORIGINAL start
-    if (origStart != null && origStart.difference(DateTime.now()) < const Duration(hours: 24)) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Reschedule not allowed within 24 hours of the appointment.')),
-        );
-      }
-      return;
-    }
-
-    DateTime date = origStart ?? DateTime.now();
-    TimeOfDay startTod = TimeOfDay.fromDateTime(origStart ?? DateTime.now());
-    TimeOfDay endTod   = TimeOfDay.fromDateTime(
-      (origEnd ?? (origStart ?? DateTime.now()).add(const Duration(hours: 1))),
-    );
-
-    Future<void> pickDate() async {
-      final picked = await showDatePicker(
-        context: context,
-        initialDate: date,
-        firstDate: DateTime.now(),
-        lastDate: DateTime.now().add(const Duration(days: 365)),
-      );
-      if (picked != null) date = picked;
-    }
-
-    Future<void> pickTime(bool start) async {
-      final picked = await showTimePicker(
-        context: context,
-        initialTime: start ? startTod : endTod,
-      );
-      if (picked != null) {
-        if (start) startTod = picked; else endTod = picked;
-      }
-    }
-
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => StatefulBuilder(
-        builder: (context, setStateDlg) {
-          String fmt(DateTime d) => _fmtDate(d);
-          String fmtT(TimeOfDay t) => _fmtTime(t);
-
-          return AlertDialog(
-            title: const Text('Reschedule'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                ListTile(
-                  dense: true,
-                  title: const Text('Date'),
-                  subtitle: Text(fmt(date)),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.calendar_month_outlined),
-                    onPressed: () async { await pickDate(); setStateDlg((){}); },
-                  ),
-                ),
-                Row(
-                  children: [
-                    Expanded(
-                      child: ListTile(
-                        dense: true,
-                        title: const Text('Start'),
-                        subtitle: Text(fmtT(startTod)),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.timer_outlined),
-                          onPressed: () async { await pickTime(true); setStateDlg((){}); },
-                        ),
-                      ),
-                    ),
-                    Expanded(
-                      child: ListTile(
-                        dense: true,
-                        title: const Text('End'),
-                        subtitle: Text(fmtT(endTod)),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.timer_outlined),
-                          onPressed: () async { await pickTime(false); setStateDlg((){}); },
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Close')),
-              FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Save')),
-            ],
-          );
-        },
-      ),
-    );
-
-    if (ok == true) {
-      final startDt = DateTime(date.year, date.month, date.day, startTod.hour, startTod.minute);
-      final endDt   = DateTime(date.year, date.month, date.day, endTod.hour, endTod.minute);
-
-      // Prevent rescheduling into the past
-      if (!startDt.isAfter(DateTime.now())) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('New start time must be in the future.')),
-          );
-        }
-        return;
-      }
-
-      // End after start
-      if (!endDt.isAfter(startDt)) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('End time must be after start.')));
-        }
-        return;
-      }
-
-      // Overlap guard
-      if (await _hasOverlap(helperId: helperId, startDt: startDt, endDt: endDt, excludeId: apptId)) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Conflicts with another booking.')));
-        }
-        return;
-      }
-
-      try {
-        await FirebaseFirestore.instance.collection('appointments').doc(apptId).update({
-          'startAt': Timestamp.fromDate(startDt),
-          'endAt': Timestamp.fromDate(endDt),
-          'updatedAt': FieldValue.serverTimestamp(),
-        });
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Rescheduled successfully.')));
-        }
-      } catch (e) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Reschedule failed: $e')));
-        }
-      }
-    }
-  }
-
-  Future<void> _confirmCancel(BuildContext context) async {
-    // Enforce 24h rule
-    final m = appDoc.data();
-    final startTs = m['startAt'] as Timestamp?;
-    final start = startTs?.toDate();
-
-    if (start == null || start.difference(DateTime.now()) < const Duration(hours: 24)) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Cancel not allowed within 24 hours of the appointment.')),
-        );
-      }
-      return;
-    }
-
-    final ok = await showDialog<bool>(
+  // Simplified 20-character reason dialog
+  Future<String?> _getReason(BuildContext context, String action) async {
+    final reasonCtrl = TextEditingController();
+    final result = await showDialog<String?>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('Cancel this appointment?'),
-        content: const Text('This cannot be undone.'),
+        title: Text('$action Reason'),
+        content: TextField(
+          controller: reasonCtrl,
+          maxLines: 2,
+          maxLength: 20, // Enforce max 20 characters
+          decoration: const InputDecoration(
+            hintText: 'Enter reason (Max 20 characters)',
+            border: OutlineInputBorder(),
+            counterText: '', // Hide built-in counter
+          ),
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Close')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.pop(context, null), child: const Text('Close')),
+          FilledButton(
+            onPressed: () {
+              final reason = reasonCtrl.text.trim();
+              if (reason.isEmpty || reason.length > 20) {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('A reason (max 20 characters) is required.')));
+                return;
+              }
+              Navigator.pop(context, reason);
+            },
+            child: Text('Confirm $action'),
+          ),
         ],
       ),
     );
-    if (ok == true && context.mounted) {
-      await _updateStatus(context, appDoc.id, 'cancelled');
+    reasonCtrl.dispose();
+    return result;
+  }
+
+  Future<void> _markCompleted(BuildContext context, String id, DateTime start) async {
+    if (!DateTime.now().isAfter(start)) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('You can mark outcome only after the appointment time.')),
+        );
+      }
+      return;
+    }
+    await _updateStatus(context, id, 'completed');
+  }
+
+  Future<void> _markMissed(BuildContext context, String id, DateTime start) async {
+    if (!DateTime.now().isAfter(start)) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('You can mark outcome only after the appointment time.')),
+        );
+      }
+      return;
+    }
+    await _updateStatus(context, id, 'missed');
+  }
+
+  // REFACTORED: Cancel function with 24h check and simplified dialog
+  Future<void> _confirmCancel(BuildContext context, Map<String, dynamic> m, String apptId) async {
+    final startTs = m['startAt'] as Timestamp?;
+    final start = startTs?.toDate();
+
+    if (start == null) return;
+
+    // --- CONDITION 1 CHECK ---
+    final status = (m['status'] ?? '').toString().toLowerCase();
+    final isConfirmed = status == 'confirmed';
+    final isWithin24Hours = start.difference(DateTime.now()).inHours <= 24;
+
+    if (isConfirmed && isWithin24Hours) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Confirmed appointments cannot be cancelled by the Peer within 24 hours (Condition 1).')),
+        );
+      }
+      return;
+    }
+
+    // Use the new simplified 20-char reason dialog
+    final reason = await _getReason(context, 'Cancel');
+
+    if (reason != null && context.mounted) {
+      await _updateStatus(context, apptId, 'cancelled', cancellationReason: reason);
     }
   }
+
 
   @override
   Widget build(BuildContext context) {
@@ -793,9 +664,14 @@ class _TutorScheduleTile extends StatelessWidget {
     final start   = startTs?.toDate();
     final end     = endTs?.toDate();
 
-    final date = (start != null) ? _fmtDate(start) : '—';
-    final time = (start != null && end != null)
-        ? '${_fmtTime(TimeOfDay.fromDateTime(start))} - ${_fmtTime(TimeOfDay.fromDateTime(end))}'
+    final isReschedulePendingHelper = status == 'pending_reschedule_student'; // Student proposed, peer confirming
+
+    final displayStart = start;
+    final displayEnd   = end;
+
+    final date = (displayStart != null) ? _fmtDate(displayStart) : '—';
+    final time = (displayStart != null && displayEnd != null)
+        ? '${_fmtTime(TimeOfDay.fromDateTime(displayStart))} - ${_fmtTime(TimeOfDay.fromDateTime(displayEnd))}'
         : '—';
 
     // venue/mode resolving
@@ -816,26 +692,33 @@ class _TutorScheduleTile extends StatelessWidget {
       'cancelled' => ('Cancelled', const Color(0xFFFFCDD2), const Color(0xFFC62828)),
       'completed' => ('Completed', const Color(0xFFC8F2D2), const Color(0xFF2E7D32)),
       'missed'    => ('Missed',    const Color(0xFFFFF3CD), const Color(0xFF8A6D3B)),
+      'pending_reschedule_student' => ('Reschedule Confirm?', const Color(0xFFFFCC80), const Color(0xFFEF6C00)),
       _           => ('Pending',   const Color(0xFFEDEEF1), const Color(0xFF6B7280)),
     };
 
-    // Time-based permissions
+    // --- PEER BUSINESS LOGIC (Conditions 1 & 2) ---
     final now = DateTime.now();
-    final canConfirm = start != null && now.isBefore(start); // confirm only before start
-    final canModify  = start != null && start!.difference(now) >= const Duration(hours: 24); // cancel/reschedule >=24h
-    final canOutcome = start != null && !now.isBefore(start!); // after or at start time
+    final isPending = status == 'pending';
+    final isConfirmed = status == 'confirmed';
+    final isTerminal = status == 'cancelled' || status == 'completed' || status == 'missed';
+
+    // Use ORIGINAL start time for all policy checks (cancel/reschedule/outcome)
+    final isBeforeOriginalStart = start != null && now.isBefore(start);
+    final canConfirmOriginal = isBeforeOriginalStart;
+    final canOutcome = start != null && !now.isBefore(start); // after or at start time
+
+    // Cancellation is allowed if pending, OR if confirmed and > 24 hours.
+    final canPeerCancel = !isTerminal && (isPending || (isConfirmed && (start?.difference(now).inHours ?? 0) > 24));
+
 
     return FutureBuilder<DocumentSnapshot<Map<String, dynamic>>>(
       future: FirebaseFirestore.instance.collection('users').doc(studentId).get(),
       builder: (context, snap) {
         final um = snap.data?.data() ?? const {};
         final studentName = _pickStudentName(um);
-        final photoUrl = ((um['photoUrl'] ?? um['avatarUrl'] ?? '') as String).trim();
+        final rawPhotoUrl = um['photoUrl'] ?? um['avatarUrl'] ?? '';
+        final photoUrl = (rawPhotoUrl is String) ? rawPhotoUrl.trim() : '';
         final title = 'Session with $studentName';
-
-        final isPending = status == 'pending';
-        final isConfirmed = status == 'confirmed';
-        final isTerminal = status == 'cancelled' || status == 'completed' || status == 'missed';
 
         return Container(
           decoration: BoxDecoration(
@@ -849,130 +732,112 @@ class _TutorScheduleTile extends StatelessWidget {
             ),
             boxShadow: [BoxShadow(color: Colors.black.withOpacity(.06), blurRadius: 10, offset: const Offset(0, 6))],
           ),
-          padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Left avatar (student)
-              GestureDetector(
-                onTap: () {
-                  Navigator.pushNamed(context, '/tutor/students');
-                },
-                child: CircleAvatar(
-                  radius: 22,
-                  backgroundColor: const Color(0xFFEEEEEE),
-                  backgroundImage: (photoUrl.isNotEmpty) ? NetworkImage(photoUrl) : null,
-                  child: (photoUrl.isEmpty) ? const Icon(Icons.person, color: Colors.grey) : null,
-                ),
-              ),
-              const SizedBox(width: 12),
-              // Details
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
+          // SCENARIO 1 FIX: Card is now clickable to Booking Info.
+          child: InkWell(
+            onTap: () {
+              Navigator.pushNamed(
+                context,
+                '/peer/booking-info',
+                arguments: {'appointmentId': appDoc.id},
+              );
+            },
+            borderRadius: BorderRadius.circular(14),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Left avatar (student)
+                  CircleAvatar(
+                    radius: 22,
+                    backgroundColor: const Color(0xFFEEEEEE),
+                    backgroundImage: (photoUrl.isNotEmpty) ? NetworkImage(photoUrl) : null,
+                    child: (photoUrl.isEmpty) ? const Icon(Icons.person, color: Colors.grey) : null,
+                  ),
+                  const SizedBox(width: 12),
+                  // Details
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Expanded(child: Text(title, style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700))),
-                        _StatusChip(label: chipLabel, bg: chipBg, fg: chipFg),
+                        Row(
+                          children: [
+                            Expanded(child: Text(title, style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700))),
+                            _StatusChip(label: chipLabel, bg: chipBg, fg: chipFg),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        Text('Date: $date', style: Theme.of(context).textTheme.bodySmall),
+                        Text('Time: $time', style: Theme.of(context).textTheme.bodySmall),
+                        Text('Venue: $venue', style: Theme.of(context).textTheme.bodySmall),
+                        const SizedBox(height: 8),
+
+                        // Actions row with policy gates
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.end,
+                          children: [
+                            // Confirm (initial booking) only before start & when pending
+                            if (isPending && canConfirmOriginal)
+                              Padding(
+                                padding: const EdgeInsets.only(right: 8),
+                                child: _SmallButton(
+                                  label: 'Confirm',
+                                  color: const Color(0xFF2E7D32),
+                                  onPressed: () => _updateStatus(context, appDoc.id, 'confirmed'),
+                                ),
+                              ),
+
+                            // Action: Reschedule Pending Helper (Student proposed)
+                            // Must push to the info page as the Home Page tile logic can't handle the Accept action directly.
+                            if (isReschedulePendingHelper && canConfirmOriginal)
+                              Padding(
+                                padding: const EdgeInsets.only(right: 8),
+                                child: _SmallButton(
+                                  label: 'Review Reschedule',
+                                  color: const Color(0xFFEF6C00),
+                                  onPressed: () => Navigator.pushNamed(context, '/peer/booking-info', arguments: {'appointmentId': appDoc.id}),
+                                ),
+                              ),
+
+
+                            // Cancel: available if pending or confirmed > 24h
+                            if (canPeerCancel)
+                              Padding(
+                                padding: const EdgeInsets.only(right: 8),
+                                child: _SmallButton(
+                                  label: 'Cancel',
+                                  color: const Color(0xFFEF6C00),
+                                  onPressed: () => _confirmCancel(context, m, appDoc.id),
+                                ),
+                              ),
+
+                            // After start: outcomes (if not already terminal)
+                            if (!isTerminal && canOutcome) ...[
+                              const SizedBox(width: 8),
+                              _SmallButton(
+                                label: 'Delivered',
+                                color: const Color(0xFF2E7D32),
+                                onPressed: () => _markCompleted(context, appDoc.id, start!),
+                              ),
+                              const SizedBox(width: 8),
+                              _SmallButton(
+                                label: 'Missed',
+                                color: const Color(0xFF8A6D3B),
+                                onPressed: () => _markMissed(context, appDoc.id, start!),
+                              ),
+                            ],
+                          ],
+                        ),
                       ],
                     ),
-                    const SizedBox(height: 6),
-                    Text('Date: $date', style: Theme.of(context).textTheme.bodySmall),
-                    Text('Time: $time', style: Theme.of(context).textTheme.bodySmall),
-                    Text('Venue: $venue', style: Theme.of(context).textTheme.bodySmall),
-                    const SizedBox(height: 8),
-
-                    // Actions row with policy gates
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
-                        // Confirm only before start & when pending
-                        if (isPending && canConfirm)
-                          Padding(
-                            padding: const EdgeInsets.only(right: 8),
-                            child: _SmallButton(
-                              label: 'Confirm',
-                              color: const Color(0xFF2E7D32),
-                              onPressed: () async {
-                                if (!canConfirm) {
-                                  if (context.mounted) {
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(content: Text('You can only confirm before the session starts.')),
-                                    );
-                                  }
-                                  return;
-                                }
-                                await _updateStatus(context, appDoc.id, 'confirmed');
-                              },
-                            ),
-                          ),
-
-                        // Reschedule only if >=24h remain (pending or confirmed)
-                        if ((isPending || isConfirmed) && canModify)
-                          Padding(
-                            padding: const EdgeInsets.only(right: 8),
-                            child: _SmallButton(
-                              label: 'Reschedule',
-                              color: const Color(0xFF1565C0),
-                              onPressed: () => _reschedule(context, m),
-                            ),
-                          ),
-
-                        // Cancel only if >=24h remain (not terminal)
-                        if (!isTerminal && canModify)
-                          Padding(
-                            padding: const EdgeInsets.only(right: 0),
-                            child: _SmallButton(
-                              label: 'Cancel',
-                              color: const Color(0xFFEF6C00),
-                              onPressed: () => _confirmCancel(context),
-                            ),
-                          ),
-
-                        // After start: outcomes (if not already terminal)
-                        if (!isTerminal && canOutcome) ...[
-                          const SizedBox(width: 8),
-                          _SmallButton(
-                            label: 'Class delivered',
-                            color: const Color(0xFF2E7D32),
-                            onPressed: () => _markCompleted(context, appDoc.id),
-                          ),
-                          const SizedBox(width: 8),
-                          _SmallButton(
-                            label: 'Class missed',
-                            color: const Color(0xFF8A6D3B),
-                            onPressed: () => _markMissed(context, appDoc.id),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ],
-                ),
+                  ),
+                ],
               ),
-            ],
+            ),
           ),
         );
       },
     );
-  }
-
-  String _pickStudentName(Map<String, dynamic> m) {
-    String pick(Map<String, dynamic> x, List<String> keys) {
-      for (final k in keys) {
-        final v = x[k];
-        if (v is String && v.trim().isNotEmpty) return v.trim();
-      }
-      return '';
-    }
-    final direct = pick(m, const ['fullName','full_name','name','displayName','display_name']);
-    if (direct.isNotEmpty) return direct;
-    final profile = (m['profile'] is Map) ? (m['profile'] as Map).cast<String, dynamic>() : null;
-    if (profile != null) {
-      final p = pick(profile, const ['fullName','full_name','name','displayName','display_name']);
-      if (p.isNotEmpty) return p;
-    }
-    return 'Student';
   }
 }
 
