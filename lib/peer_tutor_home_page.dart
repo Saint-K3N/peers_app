@@ -513,15 +513,6 @@ class _TutorScheduleTile extends StatelessWidget {
   }
 
   String _pickStudentName(Map<String, dynamic> m) {
-
-    final bookerName = (m['bookerName'] ?? '').toString().trim();
-    final bookerRole = (m['bookerRole'] ?? '').toString().trim();
-
-    if (bookerName.isNotEmpty) {
-      // Use booker's name and role for HOP-made appointments
-      return bookerName + (bookerRole.isNotEmpty ? ' ($bookerRole)' : '');
-    }
-
     String pick(Map<String, dynamic> x, List<String> keys) {
       for (final k in keys) {
         final v = x[k];
@@ -724,7 +715,7 @@ class _TutorScheduleTile extends StatelessWidget {
       future: FirebaseFirestore.instance.collection('users').doc(studentId).get(),
       builder: (context, snap) {
         final um = snap.data?.data() ?? const {};
-        final studentName = _pickStudentName(m);
+        final studentName = _pickStudentName(um);
         final rawPhotoUrl = um['photoUrl'] ?? um['avatarUrl'] ?? '';
         final photoUrl = (rawPhotoUrl is String) ? rawPhotoUrl.trim() : '';
         final title = 'Session with $studentName';

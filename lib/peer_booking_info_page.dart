@@ -55,6 +55,8 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
         return 'Peer Reschedule';
       case 'pending_reschedule_student':
         return 'Student Reschedule';
+      case 'pending_reschedule_hop':
+        return 'HOP Reschedule';
       default:
         return 'Pending';
     }
@@ -72,6 +74,7 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
         return (const Color(0xFFFFF3CD), const Color(0xFF8A6D3B));
       case 'pending_reschedule_peer':
       case 'pending_reschedule_student':
+      case 'pending_reschedule_hop':  // ADD THIS
         return (const Color(0xFFFFF3CD), const Color(0xFF8A6D3B));
       default:
         return (const Color(0xFFEDEEF1), const Color(0xFF6B7280));
@@ -79,7 +82,7 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
   }
 
   // -----------------------------------------------------------------------
-  // FIX: Safe Snackbar wrapper to prevent framework assertion errors on rebuild
+  // Safe Snackbar wrapper to prevent framework assertion errors on rebuild
   // -----------------------------------------------------------------------
   Future<void> _showSnackbarSafe(String message) async {
     // Wait for the next frame to avoid collision with the current build cycle
@@ -254,6 +257,43 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
     }
   }
 
+  Future<void> _acceptHopReschedule(String apptId, Map<String, dynamic> m) async {
+    final helperId = (m['helperId'] ?? '').toString();
+    final newStartTs = m['proposedStartAt'] as Timestamp?;
+    final newEndTs   = m['proposedEndAt'] as Timestamp?;
+
+    if (newStartTs == null || newEndTs == null) {
+      await _showSnackbarSafe('Reschedule data is incomplete.');
+      return;
+    }
+
+    final newStartDt = newStartTs.toDate();
+    final newEndDt   = newEndTs.toDate();
+
+    if (await _hasOverlap(helperId: helperId, startDt: newStartDt, endDt: newEndDt, excludeId: apptId)) {
+      await _showSnackbarSafe('Proposed time conflicts with your existing schedule.');
+      return;
+    }
+
+    try {
+      await FirebaseFirestore.instance.collection('appointments').doc(apptId).set({
+        'status': 'confirmed',
+        'startAt': newStartTs,
+        'endAt': newEndTs,
+        'proposedStartAt': FieldValue.delete(),
+        'proposedEndAt': FieldValue.delete(),
+        'rescheduleReasonPeer': FieldValue.delete(),
+        'rescheduleReasonStudent': FieldValue.delete(),
+        'rescheduleReasonHop': FieldValue.delete(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      await _showSnackbarSafe('Reschedule confirmed and appointment updated.');
+    } catch (e) {
+      await _showSnackbarSafe('Confirmation failed: $e');
+    }
+  }
+
 
   Future<bool> _hasOverlap({required String helperId, required DateTime startDt, required DateTime endDt, String? excludeId}) async {
     final snap = await FirebaseFirestore.instance.collection('appointments').where('helperId', isEqualTo: helperId).get();
@@ -326,6 +366,7 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
                     final statusLbl = _statusLabel(statusRaw);
                     final (chipBg, chipFg) = _statusColors(statusRaw);
                     final studentId = (m['studentId'] ?? '').toString();
+                    final bookerId = (m['bookerId'] ?? '').toString();
 
                     final cancellationReason = (m['cancellationReason'] ?? '').toString().trim();
                     final rescheduleReasonPeer = (m['rescheduleReasonPeer'] ?? '').toString().trim();
@@ -349,13 +390,15 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
                     bool canPeerCancel = false;
                     bool canPeerReschedule = false;
                     bool isPendingStudentReschedule = statusRaw == 'pending_reschedule_student';
+                    bool isPendingHopReschedule = statusRaw == 'pending_reschedule_hop';
+
 
                     if (hasStart && !isTerminal && !isPast) {
-                      if (isPendingStudentReschedule) {
-                        // Special state: Peer must confirm the student's proposal
+                      if (isPendingStudentReschedule || isPendingHopReschedule) {  // MODIFY THIS LINE
+                        // Special state: Peer must confirm the proposal
                         canConfirm = false;
-                        canPeerCancel = true; // Peers can cancel the student's proposal
-                        canPeerReschedule = false; // Peer can only accept or ignore
+                        canPeerCancel = true;
+                        canPeerReschedule = false;
                       } else if (isWithin24Hours) {
                         // Condition 1: <= 24 hours
                         if (isPending) {
@@ -393,7 +436,7 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
                       children: [
                         Stack(
                           children: [
-                            _StudentInfoCard(studentId: studentId),
+                            _StudentOrHopInfoCard(studentId: studentId, bookerId: bookerId),
                             Positioned(
                               right: 12,
                               top: 12,
@@ -403,18 +446,19 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
                         ),
                         const SizedBox(height: 12),
 
-                        // Display Reschedule Reasons (Peer or Student initiated)
+                        // Display Reschedule Reasons (Peer, Student, or HOP initiated)
                         if (rescheduleReasonPeer.isNotEmpty) ...[
                           _ReasonContainer(label: 'Peer Reschedule Reason', reason: rescheduleReasonPeer, isReschedule: true),
                           const SizedBox(height: 12),
                         ] else if (rescheduleReasonStudent.isNotEmpty) ...[
                           _ReasonContainer(label: 'Student Reschedule Reason', reason: rescheduleReasonStudent, isReschedule: true),
                           const SizedBox(height: 12),
-                        ],
-
-                        // Display Cancellation Reason (Student or Peer initiated)
-                        if (statusRaw == 'cancelled' && cancellationReason.isNotEmpty) ...[
-                          _ReasonContainer(label: 'Cancellation Reason', reason: cancellationReason, isAlert: true),
+                        ] else if ((m['rescheduleReasonHop'] ?? '').toString().trim().isNotEmpty) ...[  // ADD THIS
+                          _ReasonContainer(
+                              label: 'HOP Reschedule Reason',
+                              reason: (m['rescheduleReasonHop'] ?? '').toString().trim(),
+                              isReschedule: true
+                          ),
                           const SizedBox(height: 12),
                         ],
 
@@ -487,6 +531,14 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
                             Wrap(
                               spacing: 8,
                               children: [
+                                // Action: Accept Reschedule (for pending_reschedule_hop)
+                                if (isPendingHopReschedule)  // ADD THIS
+                                  FilledButton(
+                                    style: FilledButton.styleFrom(backgroundColor: const Color(0xFF2E7D32)),
+                                    onPressed: () => _acceptHopReschedule(widget.appointmentId, m),
+                                    child: const Text('Accept Reschedule'),
+                                  ),
+
                                 // Action: Accept Reschedule (for pending_reschedule_student)
                                 if (isPendingStudentReschedule)
                                   FilledButton(
@@ -631,11 +683,14 @@ class _TutorHeaderBar extends StatelessWidget {
   }
 }
 
-/* ---------------------------- Student Info Card --------------------------- */
-
-class _StudentInfoCard extends StatelessWidget {
+class _StudentOrHopInfoCard extends StatelessWidget {
   final String studentId;
-  const _StudentInfoCard({required this.studentId});
+  final String bookerId;
+
+  const _StudentOrHopInfoCard({
+    required this.studentId,
+    required this.bookerId,
+  });
 
   String _pick(Map<String, dynamic> m, List<String> keys) {
     for (final k in keys) {
@@ -656,63 +711,78 @@ class _StudentInfoCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = Theme.of(context).textTheme;
 
+    // Determine if this is a HOP or Student appointment
+    final isHopAppointment = bookerId.isNotEmpty;
+    final userId = isHopAppointment ? bookerId : studentId;
+    final label = isHopAppointment ? 'HOP' : 'Student';
+
+    if (userId.isEmpty) {
+      return _buildCard(t, 'User', '—', '', 'Student/HOP');
+    }
+
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: (studentId.isEmpty)
-          ? const Stream.empty()
-          : FirebaseFirestore.instance.collection('users').doc(studentId).snapshots(),
+      stream: FirebaseFirestore.instance.collection('users').doc(userId).snapshots(),
       builder: (context, snap) {
-        final m = snap.data?.data() ?? <String, dynamic>{};
-        final name = _pick(m, const ['fullName','full_name','name','displayName','display_name']).ifEmpty('Student');
+        if (!snap.hasData || snap.data?.data() == null) {
+          return _buildCard(t, 'Loading...', '—', '', label);
+        }
+
+        final m = snap.data!.data()!;
+        final name = _pick(m, const ['fullName','full_name','name','displayName','display_name']).ifEmpty(label);
         final email = _pick(m, const ['email', 'emailAddress']).ifEmpty('—');
         final photoUrl = ((m['photoUrl'] ?? m['avatarUrl'] ?? '') as String).trim();
 
-        final avatar = Column(
-          children: [
-            CircleAvatar(
-              radius: 22,
-              backgroundColor: Colors.grey.shade300,
-              backgroundImage: (photoUrl.isNotEmpty) ? NetworkImage(photoUrl) : null,
-              child: (photoUrl.isEmpty) ? const Icon(Icons.person, color: Colors.white) : null,
-            ),
-            const SizedBox(height: 6),
-            Text('Student', style: t.labelSmall),
-          ],
-        );
-
-        final info = Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(name, style: t.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
-            Text(email, style: t.bodySmall),
-            const SizedBox(height: 6),
-            Text('Bio: N/A', style: t.bodySmall),
-          ],
-        );
-
-        return Container(
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: const Color(0xFFDDE6FF), width: 2),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(.05),
-                blurRadius: 8,
-                offset: const Offset(0, 4),
-              ),
-            ],
-          ),
-          padding: const EdgeInsets.all(12),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              avatar,
-              const SizedBox(width: 10),
-              Expanded(child: info),
-            ],
-          ),
-        );
+        return _buildCard(t, name, email, photoUrl, label);
       },
+    );
+  }
+
+  Widget _buildCard(TextTheme t, String name, String email, String photoUrl, String label) {
+    final avatar = Column(
+      children: [
+        CircleAvatar(
+          radius: 22,
+          backgroundColor: Colors.grey.shade300,
+          backgroundImage: (photoUrl.isNotEmpty) ? NetworkImage(photoUrl) : null,
+          child: (photoUrl.isEmpty) ? const Icon(Icons.person, color: Colors.white) : null,
+        ),
+        const SizedBox(height: 6),
+        Text(label, style: t.labelSmall),
+      ],
+    );
+
+    final info = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(name, style: t.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
+        Text(email, style: t.bodySmall),
+        const SizedBox(height: 6),
+        Text('Bio: N/A', style: t.bodySmall),
+      ],
+    );
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFDDE6FF), width: 2),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(.05),
+            blurRadius: 8,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      padding: const EdgeInsets.all(12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          avatar,
+          const SizedBox(width: 10),
+          Expanded(child: info),
+        ],
+      ),
     );
   }
 }

@@ -940,21 +940,20 @@ class _StudentsYouWorkedWith extends StatelessWidget {
   const _StudentsYouWorkedWith({required this.helperId});
 
   Future<List<_StudentMini>> _loadStudents() async {
-    // Get all appointments (any status) for this helper
+    // CRITICAL FIX: Only fetch COMPLETED appointments
     final appts = await FirebaseFirestore.instance
         .collection('appointments')
         .where('helperId', isEqualTo: helperId)
+        .where('status', isEqualTo: 'completed')  // ✅ ADDED: Only completed sessions
         .get();
 
     final byStudent =
     <String, List<QueryDocumentSnapshot<Map<String, dynamic>>>>{};
 
-    // Filter appointments to only consider completed sessions
+    // Group completed sessions by student
     for (final d in appts.docs) {
       final s = (d['studentId'] ?? '').toString();
-      // Check for 'completed' status
-      final status = (d['status'] ?? '').toString().toLowerCase().trim();
-      if (s.isEmpty || status != 'completed') continue;
+      if (s.isEmpty) continue;
       (byStudent[s] ??= []).add(d);
     }
 
@@ -962,7 +961,7 @@ class _StudentsYouWorkedWith extends StatelessWidget {
 
     final students = <_StudentMini>[];
 
-    // For each student, fetch user + completed count (with this tutor)
+    // For each student, fetch user info + count completed sessions
     for (final entry in byStudent.entries) {
       final studentId = entry.key;
       final apptsWithStudent = entry.value;
@@ -999,8 +998,7 @@ class _StudentsYouWorkedWith extends StatelessWidget {
         }
       }
 
-      // completed sessions count (with THIS student), case-insensitive
-      // Since `apptsWithStudent` already only contains completed sessions, we just count them
+      // Count of completed sessions (all in apptsWithStudent are already completed)
       final completedCount = apptsWithStudent.length;
 
       students.add(_StudentMini(
@@ -1011,15 +1009,16 @@ class _StudentsYouWorkedWith extends StatelessWidget {
       ));
     }
 
-    // sort: most sessions first
+    // Sort: most sessions first
     students.sort((a, b) => b.sessionsWithMe.compareTo(a.sessionsWithMe));
     return students;
   }
 
   void _openStudentDetail(BuildContext context, _StudentMini s) {
+    // ✅ REDIRECT: Navigate to the specific student's detail page
     Navigator.pushNamed(
       context,
-      '/peer_tutor/student_detail',
+      '/tutor/students/detail',  // ✅ FIXED: Correct route
       arguments: {'studentId': s.studentId},
     );
   }
@@ -1047,7 +1046,7 @@ class _StudentsYouWorkedWith extends StatelessWidget {
                   runSpacing: 12,
                   children: students.map((s) {
                     return InkWell(
-                      onTap: () => _openStudentDetail(context, s),
+                      onTap: () => _openStudentDetail(context, s),  // ✅ Tap redirects to detail page
                       borderRadius: BorderRadius.circular(12),
                       child: Ink(
                         padding:

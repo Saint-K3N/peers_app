@@ -72,7 +72,6 @@ class _Header extends StatelessWidget {
 
     return Row(
       children: [
-        // PEERS gradient logo
         Container(
           height: 48,
           width: 48,
@@ -103,7 +102,6 @@ class _Header extends StatelessWidget {
           ],
         ),
         const Spacer(),
-        // profile button (optional: route to HOP profile)
         InkWell(
           borderRadius: BorderRadius.circular(30),
           onTap: () => Navigator.pushNamed(context, '/hop/profile'),
@@ -151,7 +149,7 @@ class _GreetingLoaderHop extends StatelessWidget {
       stream: usersCol.doc(hopUid).snapshots(),
       builder: (context, userSnap) {
         final name = _pickName(userSnap.data?.data() ?? const {});
-        // Approved tutors (peer_tutor) & pending apps
+
         final approvedQ = appsCol
             .where('requestedRole', isEqualTo: 'peer_tutor')
             .where('status', isEqualTo: 'approved');
@@ -365,22 +363,6 @@ class _TodayScheduleListHop extends StatelessWidget {
   DateTime _startOfDay(DateTime d) => DateTime(d.year, d.month, d.day);
   DateTime _endOfDay(DateTime d) => DateTime(d.year, d.month, d.day, 23, 59, 59);
 
-  Future<List<String>> _loadApprovedTutorIds() async {
-    final q = await FirebaseFirestore.instance
-        .collection('peer_applications')
-        .where('requestedRole', isEqualTo: 'peer_tutor')
-        .where('status', isEqualTo: 'approved')
-        .get();
-
-    // NOTE: If you scope tutors by HOP, add .where('hopId', isEqualTo: hopUid) in your data model.
-    final ids = <String>[];
-    for (final d in q.docs) {
-      final uid = (d['userId'] ?? '').toString();
-      if (uid.isNotEmpty) ids.add(uid);
-    }
-    return ids;
-  }
-
   @override
   Widget build(BuildContext context) {
     final t = Theme.of(context).textTheme;
@@ -388,68 +370,55 @@ class _TodayScheduleListHop extends StatelessWidget {
     final sod = _startOfDay(now);
     final eod = _endOfDay(now);
 
-    return FutureBuilder<List<String>>(
-      future: _loadApprovedTutorIds(),
-      builder: (context, tutorSnap) {
-        final tutorIds = tutorSnap.data ?? const <String>[];
-        if (tutorSnap.connectionState == ConnectionState.waiting) {
+    // Query appointments where HOP is the booker
+    final stream = FirebaseFirestore.instance
+        .collection('appointments')
+        .where('bookerId', isEqualTo: hopUid)
+        .where('startAt', isGreaterThanOrEqualTo: Timestamp.fromDate(sod))
+        .where('startAt', isLessThanOrEqualTo: Timestamp.fromDate(eod))
+        .snapshots();
+
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: stream,
+      builder: (context, snap) {
+        if (snap.connectionState == ConnectionState.waiting) {
           return const Center(
             child: Padding(padding: EdgeInsets.symmetric(vertical: 12), child: CircularProgressIndicator()),
           );
         }
-        if (tutorIds.isEmpty) {
-          return HopHomePage._emptyBox('No approved tutors yet.');
+        if (snap.hasError) {
+          return Text('Error: ${snap.error}', style: t.bodyMedium?.copyWith(color: Colors.red));
         }
 
-        final stream = FirebaseFirestore.instance
-            .collection('appointments')
-            .where('startAt', isGreaterThanOrEqualTo: Timestamp.fromDate(sod))
-            .where('startAt', isLessThanOrEqualTo: Timestamp.fromDate(eod))
-            .snapshots();
+        final docs = (snap.data?.docs ?? const [])
+            .where((d) {
+          final m = d.data();
+          final status = (m['status'] ?? '').toString().toLowerCase().trim();
+          // Show active appointments (not terminal states)
+          return status == 'pending' || status == 'confirmed' ||
+              status == 'pending_reschedule_hop' || status == 'pending_reschedule_peer';
+        })
+            .toList()
+          ..sort((a, b) {
+            int aMs = 0, bMs = 0;
+            final aTs = a.data()['startAt'];
+            final bTs = b.data()['startAt'];
+            if (aTs is Timestamp) aMs = aTs.toDate().millisecondsSinceEpoch;
+            if (bTs is Timestamp) bMs = bTs.toDate().millisecondsSinceEpoch;
+            return aMs.compareTo(bMs);
+          });
 
-        return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-          stream: stream,
-          builder: (context, snap) {
-            if (snap.connectionState == ConnectionState.waiting) {
-              return const Center(
-                child: Padding(padding: EdgeInsets.symmetric(vertical: 12), child: CircularProgressIndicator()),
-              );
-            }
-            if (snap.hasError) {
-              return Text('Error: ${snap.error}', style: t.bodyMedium?.copyWith(color: Colors.red));
-            }
+        if (docs.isEmpty) {
+          return HopHomePage._emptyBox("No appointments for today.");
+        }
 
-            final docs = (snap.data?.docs ?? const [])
-                .where((d) {
-              final m = d.data();
-              final helperId = (m['helperId'] ?? '').toString();
-              final status = (m['status'] ?? '').toString().toLowerCase().trim();
-              final active = status == 'pending' || status == 'confirmed';
-              return tutorIds.contains(helperId) && active;
-            })
-                .toList()
-              ..sort((a, b) {
-                int aMs = 0, bMs = 0;
-                final aTs = a.data()['startAt'];
-                final bTs = b.data()['startAt'];
-                if (aTs is Timestamp) aMs = aTs.toDate().millisecondsSinceEpoch;
-                if (bTs is Timestamp) bMs = bTs.toDate().millisecondsSinceEpoch;
-                return aMs.compareTo(bMs);
-              });
-
-            if (docs.isEmpty) {
-              return HopHomePage._emptyBox("No appointments for today.");
-            }
-
-            return Column(
-              children: [
-                for (final d in docs) ...[
-                  _HopScheduleTile(appDoc: d),
-                  const SizedBox(height: 12),
-                ]
-              ],
-            );
-          },
+        return Column(
+          children: [
+            for (final d in docs) ...[
+              _HopScheduleTile(appDoc: d),
+              const SizedBox(height: 12),
+            ]
+          ],
         );
       },
     );
@@ -472,25 +441,45 @@ class _HopScheduleTile extends StatelessWidget {
 
   (Color border, Color dot, String chip, Color chipBg, Color chipFg) _styleFor(String status) {
     switch (status) {
+      case 'pending':
+        return (const Color(0xFF2F8D46), const Color(0xFF2F8D46), 'Awaiting Confirmation',
+        const Color(0xFFC9F2D9), const Color(0xFF1B5E20));
+      case 'confirmed':
+        return (const Color(0xFF2F8D46), const Color(0xFF2F8D46), 'Scheduled',
+        const Color(0xFFE3F2FD), const Color(0xFF1565C0));
+      case 'pending_reschedule_hop':
+        return (const Color(0xFF8A6D3B), const Color(0xFF8A6D3B), 'Reschedule Pending',
+        const Color(0xFFFFF3CD), const Color(0xFF8A6D3B));
+      case 'pending_reschedule_peer':
+        return (const Color(0xFFEF6C00), const Color(0xFFEF6C00), 'Confirm Reschedule?',
+        const Color(0xFFFFCC80), const Color(0xFFEF6C00));
       case 'cancelled':
         return (const Color(0xFFE53935), const Color(0xFFE53935), 'Cancelled',
-        const Color(0xFFE53935), Colors.white);
-      case 'confirmed':
-        return (const Color(0xFF2F8D46), const Color(0xFF2F8D46), 'Confirmed',
-        const Color(0xFFC8F2D2), const Color(0xFF2E7D32));
-      case 'pending':
+        const Color(0xFFFFCDD2), const Color(0xFFC62828));
       default:
         return (const Color(0xFF6B7280), const Color(0xFF6B7280), 'Pending',
         const Color(0xFFEDEEF1), const Color(0xFF6B7280));
     }
   }
 
-  Future<void> _updateStatus(BuildContext context, String id, String status) async {
+  Future<void> _updateStatus(BuildContext context, String id, String status, {String? cancellationReason}) async {
     try {
-      await FirebaseFirestore.instance.collection('appointments').doc(id).update({
+      final updateData = {
         'status': status,
         'updatedAt': FieldValue.serverTimestamp(),
-      });
+        'proposedStartAt': FieldValue.delete(),
+        'proposedEndAt': FieldValue.delete(),
+        'rescheduleReasonHop': FieldValue.delete(),
+        'rescheduleReasonPeer': FieldValue.delete(),
+        if (cancellationReason != null) 'cancellationReason': cancellationReason,
+        if (cancellationReason != null) 'cancelledBy': 'hop',
+      };
+
+      await FirebaseFirestore.instance.collection('appointments').doc(id).set(
+        updateData,
+        SetOptions(merge: true),
+      );
+
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Status updated to $status.')));
       }
@@ -501,20 +490,61 @@ class _HopScheduleTile extends StatelessWidget {
     }
   }
 
-  Future<void> _confirmCancel(BuildContext context) async {
-    final m = appDoc.data();
+  Future<String?> _getReason(BuildContext context, String action) async {
+    final reasonCtrl = TextEditingController();
+    final result = await showDialog<String?>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text('$action Reason'),
+        content: TextField(
+          controller: reasonCtrl,
+          maxLines: 2,
+          maxLength: 20,
+          decoration: const InputDecoration(
+            hintText: 'Enter reason (Max 20 characters)',
+            border: OutlineInputBorder(),
+            counterText: '',
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, null), child: const Text('Close')),
+          FilledButton(
+            onPressed: () {
+              final reason = reasonCtrl.text.trim();
+              if (reason.isEmpty || reason.length > 20) {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('A reason (max 20 characters) is required.')));
+                return;
+              }
+              Navigator.pop(context, reason);
+            },
+            child: Text('Confirm $action'),
+          ),
+        ],
+      ),
+    );
+    return result;
+  }
+
+  Future<void> _confirmCancel(BuildContext context, Map<String, dynamic> m) async {
     final startTs = m['startAt'] as Timestamp?;
     final start = startTs?.toDate();
 
-    // 24h rule
-    if (start == null || start.difference(DateTime.now()) < const Duration(hours: 24)) {
+    if (start == null) return;
+
+    final status = (m['status'] ?? '').toString().toLowerCase();
+    final canCancel = status == 'pending' || status == 'confirmed';
+
+    if (!canCancel) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Cancel not allowed within 24 hours of the appointment.')),
+          const SnackBar(content: Text('Cannot cancel this appointment.')),
         );
       }
       return;
     }
+
+    final reason = await _getReason(context, 'Cancel');
+    if (reason == null) return;
 
     final ok = await showDialog<bool>(
       context: context,
@@ -528,7 +558,38 @@ class _HopScheduleTile extends StatelessWidget {
       ),
     );
     if (ok == true && context.mounted) {
-      await _updateStatus(context, appDoc.id, 'cancelled');
+      await _updateStatus(context, appDoc.id, 'cancelled', cancellationReason: reason);
+    }
+  }
+
+  Future<void> _acceptReschedule(BuildContext context, Map<String, dynamic> m) async {
+    final propStart = m['proposedStartAt'] as Timestamp?;
+    final propEnd = m['proposedEndAt'] as Timestamp?;
+
+    if (propStart == null || propEnd == null) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Reschedule data incomplete.')),
+        );
+      }
+      return;
+    }
+
+    await FirebaseFirestore.instance.collection('appointments').doc(appDoc.id).set({
+      'status': 'confirmed',
+      'startAt': propStart,
+      'endAt': propEnd,
+      'proposedStartAt': FieldValue.delete(),
+      'proposedEndAt': FieldValue.delete(),
+      'rescheduleReasonHop': FieldValue.delete(),
+      'rescheduleReasonPeer': FieldValue.delete(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Reschedule accepted.')),
+      );
     }
   }
 
@@ -562,7 +623,27 @@ class _HopScheduleTile extends StatelessWidget {
 
     final (border, dot, chipText, chipBg, chipFg) = _styleFor(status);
 
-    final canCancel = start != null && start.isAfter(DateTime.now().add(const Duration(hours: 24))) && status != 'cancelled';
+    // HOP BUSINESS LOGIC (Conditions 1, 2, 3)
+    final now = DateTime.now();
+    final hoursUntil = start != null ? start.difference(now).inHours : 0;
+    final isWithin24Hours = hoursUntil <= 24;
+    final isPending = status == 'pending';
+    final isConfirmed = status == 'confirmed';
+    final isPendingReschedulePeer = status == 'pending_reschedule_peer';
+
+    bool canCancel = false;
+    bool showAcceptReschedule = false;
+
+    if (start != null && start.isAfter(now)) {
+      if (isPending || isConfirmed) {
+        // Can always cancel pending or confirmed with reason
+        canCancel = true;
+      } else if (isPendingReschedulePeer) {
+        // Peer proposed reschedule
+        showAcceptReschedule = true;
+        canCancel = true;
+      }
+    }
 
     return FutureBuilder<DocumentSnapshot<Map<String, dynamic>>>(
       future: FirebaseFirestore.instance.collection('users').doc(helperId).get(),
@@ -602,65 +683,94 @@ class _HopScheduleTile extends StatelessWidget {
             border: Border.all(color: border, width: 2),
             boxShadow: [BoxShadow(color: Colors.black.withOpacity(.06), blurRadius: 10, offset: Offset(0, 6))],
           ),
-          padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
-          child: Stack(
-            children: [
-              Positioned(
-                left: -2, top: 8,
-                child: Container(width: 14, height: 14, decoration: BoxDecoration(color: dot, shape: BoxShape.circle)),
-              ),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
+          child: InkWell(
+            onTap: () {
+              Navigator.pushNamed(
+                context,
+                '/hop/booking',
+                arguments: {'appointmentId': appDoc.id},
+              );
+            },
+            borderRadius: BorderRadius.circular(14),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+              child: Stack(
                 children: [
-                  Container(
-                    height: 44, width: 44,
-                    decoration: BoxDecoration(color: Colors.white, border: Border.all(color: Colors.black87, width: 2), shape: BoxShape.circle),
-                    alignment: Alignment.center,
-                    child: const Icon(Icons.person_outline, color: Colors.black87, size: 26),
+                  Positioned(
+                    left: -2, top: 8,
+                    child: Container(width: 14, height: 14, decoration: BoxDecoration(color: dot, shape: BoxShape.circle)),
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        height: 44, width: 44,
+                        decoration: BoxDecoration(color: Colors.white, border: Border.all(color: Colors.black87, width: 2), shape: BoxShape.circle),
+                        alignment: Alignment.center,
+                        child: const Icon(Icons.person_outline, color: Colors.black87, size: 26),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Expanded(child: Text(title, style: t.titleMedium?.copyWith(fontWeight: FontWeight.w700))),
-                            const SizedBox(width: 8),
-                            Flexible(child: Align(alignment: Alignment.centerRight, child: FittedBox(fit: BoxFit.scaleDown, child: chip))),
-                          ],
-                        ),
-                        const SizedBox(height: 6),
-                        Text('Date: $date', style: t.bodySmall),
-                        Text('Time: $time', style: t.bodySmall),
-                        Text('Venue: $venue', style: t.bodySmall),
-                        const SizedBox(height: 8),
-                        if (canCancel)
-                          Align(
-                            alignment: Alignment.centerRight,
-                            child: SizedBox(
-                              height: 34,
-                              child: FilledButton(
-                                style: FilledButton.styleFrom(
-                                  backgroundColor: const Color(0xFFF39C12),
-                                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                                ),
-                                onPressed: () => _confirmCancel(context),
-                                child: const Text('Cancel', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                            Row(
+                              children: [
+                                Expanded(child: Text(title, style: t.titleMedium?.copyWith(fontWeight: FontWeight.w700))),
+                                const SizedBox(width: 8),
+                                Flexible(child: Align(alignment: Alignment.centerRight, child: FittedBox(fit: BoxFit.scaleDown, child: chip))),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            Text('Date: $date', style: t.bodySmall),
+                            Text('Time: $time', style: t.bodySmall),
+                            Text('Venue: $venue', style: t.bodySmall),
+                            const SizedBox(height: 8),
+                            Align(
+                              alignment: Alignment.centerRight,
+                              child: Wrap(
+                                spacing: 8,
+                                children: [
+                                  if (showAcceptReschedule)
+                                    SizedBox(
+                                      height: 34,
+                                      child: FilledButton(
+                                        style: FilledButton.styleFrom(
+                                          backgroundColor: const Color(0xFF2E7D32),
+                                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                        ),
+                                        onPressed: () => _acceptReschedule(context, m),
+                                        child: const Text('Accept Reschedule', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                                      ),
+                                    ),
+                                  if (canCancel)
+                                    SizedBox(
+                                      height: 34,
+                                      child: FilledButton(
+                                        style: FilledButton.styleFrom(
+                                          backgroundColor: const Color(0xFFEF6C00),
+                                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                        ),
+                                        onPressed: () => _confirmCancel(context, m),
+                                        child: const Text('Cancel', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                                      ),
+                                    ),
+                                ],
                               ),
                             ),
-                          ),
-                      ],
-                    ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
-            ],
+            ),
           ),
         );
       },
     );
   }
 }
-

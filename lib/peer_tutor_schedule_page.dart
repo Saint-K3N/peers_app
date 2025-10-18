@@ -1,4 +1,3 @@
-// lib/peer_tutor_schedule_page.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -15,7 +14,7 @@ class _PeerTutorSchedulePageState extends State<PeerTutorSchedulePage> {
   DateTime _focusedDay = DateTime.now();
   DateTime? _selectedDay;
   CalendarFormat _format = CalendarFormat.month;
-  String _sortBy = 'time'; // time | status | student
+  String _sortBy = 'time';
   String get _uid => FirebaseAuth.instance.currentUser?.uid ?? '';
 
   @override
@@ -43,7 +42,6 @@ class _PeerTutorSchedulePageState extends State<PeerTutorSchedulePage> {
 
   DateTime _dayKey(DateTime d) => DateTime(d.year, d.month, d.day);
 
-  // UPDATED: Use status fields for Peers (cancelledBy: 'helper')
   Future<void> _updateStatus(String id, String status, {String? cancellationReason}) async {
     final updateData = {
       'status': status,
@@ -51,6 +49,7 @@ class _PeerTutorSchedulePageState extends State<PeerTutorSchedulePage> {
       'proposedStartAt': FieldValue.delete(),
       'proposedEndAt': FieldValue.delete(),
       'rescheduleReasonPeer': FieldValue.delete(),
+      'rescheduleReasonHop': FieldValue.delete(),
       'rescheduleReasonStudent': FieldValue.delete(),
       if (cancellationReason != null) 'cancellationReason': cancellationReason,
       if (cancellationReason != null) 'cancelledBy': 'helper',
@@ -61,7 +60,6 @@ class _PeerTutorSchedulePageState extends State<PeerTutorSchedulePage> {
     );
   }
 
-  // NEW/REFACTORED: Consolidated function to get 20-char reason
   Future<String?> _getReason(BuildContext context, String action) async {
     final reasonCtrl = TextEditingController();
     final result = await showDialog<String?>(
@@ -71,25 +69,22 @@ class _PeerTutorSchedulePageState extends State<PeerTutorSchedulePage> {
         content: TextField(
           controller: reasonCtrl,
           maxLines: 2,
-          maxLength: 20, // Enforce max 20 characters
+          maxLength: 20,
           decoration: const InputDecoration(
             hintText: 'Enter reason (Max 20 characters)',
             border: OutlineInputBorder(),
-            counterText: '', // Hide built-in counter
+            counterText: '',
           ),
         ),
         actions: [
-          // FIX: Use dialogContext to pop the dialog
           TextButton(onPressed: () => Navigator.pop(dialogContext, null), child: const Text('Close')),
           FilledButton(
             onPressed: () {
               final reason = reasonCtrl.text.trim();
               if (reason.isEmpty || reason.length > 20) {
-                // Use original context for Snackbar (correct)
                 ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('A reason (max 20 characters) is required.')));
                 return;
               }
-              // FIX: Use dialogContext to pop the dialog
               Navigator.pop(dialogContext, reason);
             },
             child: Text('Confirm $action'),
@@ -97,7 +92,6 @@ class _PeerTutorSchedulePageState extends State<PeerTutorSchedulePage> {
         ],
       ),
     );
-    reasonCtrl.dispose();
     return result;
   }
 
@@ -117,13 +111,11 @@ class _PeerTutorSchedulePageState extends State<PeerTutorSchedulePage> {
       if (excludeId != null && d.id == excludeId) continue;
       final m = d.data();
       final status = (m['status'] ?? '').toString();
-      // Only check against currently active/pending slots
       if (status != 'pending' && status != 'confirmed' && !status.startsWith('pending_reschedule')) continue;
 
       List<DateTime?> checkStarts = [];
       List<DateTime?> checkEnds = [];
 
-      // Check current slot
       final tsStart = m['startAt'];
       final tsEnd   = m['endAt'];
       if (tsStart is Timestamp && tsEnd is Timestamp) {
@@ -131,7 +123,6 @@ class _PeerTutorSchedulePageState extends State<PeerTutorSchedulePage> {
         checkEnds.add(tsEnd.toDate());
       }
 
-      // Check pending reschedule slot (for peer-proposed changes awaiting student confirmation)
       final newTsStart = m['proposedStartAt'];
       final newTsEnd = m['proposedEndAt'];
       if (newTsStart is Timestamp && newTsEnd is Timestamp) {
@@ -151,7 +142,6 @@ class _PeerTutorSchedulePageState extends State<PeerTutorSchedulePage> {
     return false;
   }
 
-  // Reschedule function: Tutor initiates, status set to pending student confirmation
   Future<void> _reschedule(BuildContext context, String apptId, Map<String,dynamic> m) async {
     final helperId = (m['helperId'] ?? '').toString();
 
@@ -167,8 +157,6 @@ class _PeerTutorSchedulePageState extends State<PeerTutorSchedulePage> {
       return;
     }
 
-    // --- CONDITION 1 CHECK ---
-    // Rule: Reschedule not allowed within 24 hours of ORIGINAL date.
     final now = DateTime.now();
     if (origStart.difference(now).inHours <= 24) {
       if (mounted) {
@@ -179,7 +167,6 @@ class _PeerTutorSchedulePageState extends State<PeerTutorSchedulePage> {
       return;
     }
 
-    // Reschedule dialog (uses shared logic)
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
       builder: (_) => _RescheduleDialogPeer(currentStart: origStart, currentEnd: origEnd),
@@ -190,7 +177,6 @@ class _PeerTutorSchedulePageState extends State<PeerTutorSchedulePage> {
     final endDt   = result['end'];
     final reason  = result['reason'];
 
-    // Overlap check
     if (await _hasOverlap(helperId: helperId, startDt: startDt, endDt: endDt, excludeId: apptId)) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Proposed time conflicts with your existing schedule.')));
@@ -198,30 +184,27 @@ class _PeerTutorSchedulePageState extends State<PeerTutorSchedulePage> {
       return;
     }
 
-    // Save as pending student confirmation
     await FirebaseFirestore.instance.collection('appointments').doc(apptId).set({
-      'status': 'pending_reschedule_peer', // Peer-initiated change needs student confirmation
-      'proposedStartAt': Timestamp.fromDate(startDt), // Store proposed time separately
+      'status': 'pending_reschedule_peer',
+      'proposedStartAt': Timestamp.fromDate(startDt),
       'proposedEndAt': Timestamp.fromDate(endDt),
-      'rescheduleReasonPeer': reason, // Peer's reason (max 20 chars enforced by dialog)
+      'rescheduleReasonPeer': reason,
       'updatedAt': FieldValue.serverTimestamp(),
-      'rescheduleReasonStudent': FieldValue.delete(), // Clear student reason if it existed
+      'rescheduleReasonStudent': FieldValue.delete(),
+      'rescheduleReasonHop': FieldValue.delete(),
     }, SetOptions(merge: true));
 
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Reschedule proposed. Waiting for student confirmation.')));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Reschedule proposed. Waiting for confirmation.')));
     }
   }
 
-  // REFACTORED: Cancel function
   Future<void> _confirmCancel(String apptId, Map<String, dynamic> m) async {
     final startTs = m['startAt'] as Timestamp?;
     final start = startTs?.toDate();
 
     if (start == null) return;
 
-    // --- CONDITION 1 CHECK ---
-    // Rule: If confirmed, Peers cannot cancel if <= 24 hours.
     final status = (m['status'] ?? '').toString().toLowerCase();
     final isConfirmed = status == 'confirmed';
     final isWithin24Hours = start.difference(DateTime.now()).inHours <= 24;
@@ -235,16 +218,13 @@ class _PeerTutorSchedulePageState extends State<PeerTutorSchedulePage> {
       return;
     }
 
-    // Use the new simplified 20-char reason dialog
     final reason = await _getReason(context, 'Cancel');
 
     if (reason != null && mounted) {
-      // The updateStatus function automatically sets cancelledBy: 'helper'
       await _updateStatus(apptId, 'cancelled', cancellationReason: reason);
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Appointment cancelled.')));
     }
   }
-
 
   @override
   Widget build(BuildContext context) {
@@ -306,13 +286,11 @@ class _PeerTutorSchedulePageState extends State<PeerTutorSchedulePage> {
                 fmtDateLong: _fmtDateLong,
                 fmtTime: _fmtTime,
 
-                // Confirm: Only updates status to 'confirmed'
                 onConfirm: (id, m) async {
                   final ts = m['startAt'];
                   if (ts is! Timestamp) return;
                   final start = ts.toDate();
 
-                  // Double check: can only confirm before start time
                   if (!DateTime.now().isBefore(start)) {
                     if (mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
@@ -324,10 +302,8 @@ class _PeerTutorSchedulePageState extends State<PeerTutorSchedulePage> {
                   await _updateStatus(id, 'confirmed');
                 },
 
-                // Cancel: logic moved to a shared function
                 onCancel: (id, m) => _confirmCancel(id, m),
 
-                // Reschedule: logic moved to a shared function
                 onReschedule: (id, m) => _reschedule(context, id, m),
               ),
             ],
@@ -338,7 +314,7 @@ class _PeerTutorSchedulePageState extends State<PeerTutorSchedulePage> {
   }
 }
 
-/* -------------------------- Header Bar (with logout) -------------------------- */
+/* Rest of the code remains the same until _TaskItem */
 
 class _HeaderBar extends StatelessWidget {
   const _HeaderBar();
@@ -420,7 +396,7 @@ class _HeaderBar extends StatelessWidget {
   }
 }
 
-/* ----------------------------- Calendar Area ----------------------------- */
+/* Calendar and Day Cell - Keep existing code */
 
 class _CalendarArea extends StatelessWidget {
   final String helperUid;
@@ -468,11 +444,9 @@ class _CalendarArea extends StatelessWidget {
             }
             for (final d in (appsSnap.data?.docs ?? const [])) {
               final m = d.data();
-              // Use startAt for marker
               final ts = m['startAt'];
               if (ts is Timestamp) add(ts.toDate());
 
-              // Also add marker for pending reschedule slot if it's on a different day
               final newTs = m['proposedStartAt'];
               if (newTs is Timestamp && newTs.toDate().day != ts?.toDate().day) add(newTs.toDate());
             }
@@ -759,8 +733,16 @@ class _TaskItem {
       return v.isNotEmpty ? v : 'Campus';
     }();
 
+    // FIX: Detect if this is a HOP appointment or Student appointment
+    final bookerId = (m['bookerId'] ?? '').toString();
     final studentId = (m['studentId'] ?? '').toString();
-    final studentName = (m['studentName'] ?? '').toString();
+
+    // Use bookerId/bookerName if it's a HOP appointment
+    final isHopAppointment = bookerId.isNotEmpty;
+    final personId = isHopAppointment ? bookerId : studentId;
+    final personName = isHopAppointment
+        ? (m['bookerName'] ?? '').toString()
+        : (m['studentName'] ?? '').toString();
 
     return _TaskItem._(
       id: id,
@@ -768,12 +750,14 @@ class _TaskItem {
       data: m,
       start: st,
       end: en,
-      title: 'Tutoring for ${studentName.isNotEmpty ? studentName : 'Student'}',
+      title: isHopAppointment
+          ? 'Meeting with ${personName.isNotEmpty ? personName : 'HOP'}'
+          : 'Tutoring for ${personName.isNotEmpty ? personName : 'Student'}',
       status: status,
       venue: venue,
       mode: mode.isEmpty ? 'physical' : mode,
-      studentId: studentId,
-      studentName: studentName,
+      studentId: personId,
+      studentName: personName,
     );
   }
 
@@ -1014,6 +998,12 @@ class _TaskCard extends StatelessWidget {
           chipFg = const Color(0xFFEF6C00);
           outline = Colors.transparent;
           break;
+        case 'pending_reschedule_hop':
+          chipLabel = 'Confirm Reschedule?';
+          chipBg = const Color(0xFFFFCC80);
+          chipFg = const Color(0xFFEF6C00);
+          outline = Colors.transparent;
+          break;
         default:
           chipLabel = 'Pending';
           chipBg = const Color(0xFFEDEEF1);
@@ -1143,7 +1133,16 @@ class _TaskCard extends StatelessWidget {
                       'Student Reason: ${m['rescheduleReasonStudent'] ?? 'N/A'}',
                       style: t.bodySmall?.copyWith(color: chipFg),
                     ),
-                  ),
+                  )
+// ADD THIS:
+                else if (item.status == 'pending_reschedule_hop')
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8.0),
+                      child: Text(
+                        'HOP Reason: ${m['rescheduleReasonHop'] ?? 'N/A'}',
+                        style: t.bodySmall?.copyWith(color: chipFg),
+                      ),
+                    ),
 
                 // Cancellation reason display
                 if (isTerminal && item.status == 'cancelled' && m.containsKey('cancellationReason'))
@@ -1161,6 +1160,10 @@ class _TaskCard extends StatelessWidget {
                     child: Wrap(
                       spacing: 8,
                       children: [
+                        // Accept Reschedule (when HOP proposed, status: pending_reschedule_hop)
+                        if (item.status == 'pending_reschedule_hop')
+                          _SmallBtn(label: 'Accept Reschedule', color: const Color(0xFF2E7D32), onTap: () => _acceptReschedule(context, m)),
+
                         // Accept Reschedule (when student proposed, status: pending_reschedule_student)
                         if (isReschedulePendingStudent)
                           _SmallBtn(label: 'Accept Reschedule', color: const Color(0xFF2E7D32), onTap: () => _acceptReschedule(context, m)),

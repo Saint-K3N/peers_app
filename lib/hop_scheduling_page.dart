@@ -37,14 +37,61 @@ class _HopSchedulingPageState extends State<HopSchedulingPage> {
 
   DateTime _dayKey(DateTime d) => DateTime(d.year, d.month, d.day);
 
-  Future<void> _updateStatus(String id, String status) async {
-    await FirebaseFirestore.instance.collection('appointments').doc(id).update({
+  Future<void> _updateStatus(String id, String status, {String? cancellationReason}) async {
+    final updateData = {
       'status': status,
       'updatedAt': FieldValue.serverTimestamp(),
-    });
+      'proposedStartAt': FieldValue.delete(),
+      'proposedEndAt': FieldValue.delete(),
+      'rescheduleReasonHop': FieldValue.delete(),
+      'rescheduleReasonPeer': FieldValue.delete(),
+      if (cancellationReason != null) 'cancellationReason': cancellationReason,
+      if (cancellationReason != null) 'cancelledBy': 'hop',
+    };
+    await FirebaseFirestore.instance.collection('appointments').doc(id).set(
+      updateData,
+      SetOptions(merge: true),
+    );
   }
 
-  // Keep overlap by helperId so a single tutor isn't double-booked.
+  // Get 20-character reason dialog
+  Future<String?> _getReason(BuildContext context, String action) async {
+    final reasonCtrl = TextEditingController();
+    final result = await showDialog<String?>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('$action Reason'),
+        content: TextField(
+          controller: reasonCtrl,
+          maxLines: 2,
+          maxLength: 20,
+          decoration: const InputDecoration(
+            hintText: 'Enter reason (Max 20 characters)',
+            border: OutlineInputBorder(),
+            counterText: '',
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext, null), child: const Text('Close')),
+          FilledButton(
+            onPressed: () {
+              final reason = reasonCtrl.text.trim();
+              if (reason.isEmpty || reason.length > 20) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('A reason (max 20 characters) is required.')),
+                );
+                return;
+              }
+              Navigator.pop(dialogContext, reason);
+            },
+            child: Text('Confirm $action'),
+          ),
+        ],
+      ),
+    );
+    return result;
+  }
+
   Future<bool> _hasOverlap({
     required String helperId,
     required DateTime startDt,
@@ -61,7 +108,8 @@ class _HopSchedulingPageState extends State<HopSchedulingPage> {
       if (excludeId != null && d.id == excludeId) continue;
       final m = d.data();
       final status = (m['status'] ?? '').toString().toLowerCase().trim();
-      if (status != 'pending' && status != 'confirmed') continue;
+      if (status != 'pending' && status != 'confirmed' && !status.startsWith('pending_reschedule')) continue;
+
       final tsStart = m['startAt'];
       final tsEnd   = m['endAt'];
       if (tsStart is! Timestamp || tsEnd is! Timestamp) continue;
@@ -69,34 +117,57 @@ class _HopSchedulingPageState extends State<HopSchedulingPage> {
       final existingEnd   = tsEnd.toDate();
       final overlaps = existingStart.isBefore(endDt) && existingEnd.isAfter(startDt);
       if (overlaps) return true;
+
+      // Also check proposed times
+      final propStart = m['proposedStartAt'];
+      final propEnd = m['proposedEndAt'];
+      if (propStart is Timestamp && propEnd is Timestamp) {
+        final pStart = propStart.toDate();
+        final pEnd = propEnd.toDate();
+        if (pStart.isBefore(endDt) && pEnd.isAfter(startDt)) return true;
+      }
     }
     return false;
   }
 
+  // HOP Reschedule: propose new time
   Future<void> _reschedule(BuildContext context, String apptId, Map<String,dynamic> m) async {
     final helperId = (m['helperId'] ?? m['tutorId'] ?? '').toString();
-    DateTime start = (m['startAt'] as Timestamp).toDate();
-    DateTime end   = (m['endAt']   as Timestamp).toDate();
+    final origStart = (m['startAt'] as Timestamp).toDate();
+    final origEnd   = (m['endAt']   as Timestamp).toDate();
+    final status = (m['status'] ?? '').toString().toLowerCase().trim();
 
-    // HOP rule: no reschedule within 24h
-    if (start.difference(DateTime.now()) < const Duration(hours: 24)) {
+    // CONDITION 1: If <= 24h, cannot reschedule at all
+    final hoursUntil = origStart.difference(DateTime.now()).inHours;
+    if (hoursUntil <= 24) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Reschedule not allowed within 24 hours of the appointment.')),
+          const SnackBar(content: Text('Reschedule not allowed within 24 hours (Condition 1).')),
         );
       }
       return;
     }
 
-    DateTime date  = _dayKey(start);
-    TimeOfDay startTod = TimeOfDay.fromDateTime(start);
-    TimeOfDay endTod   = TimeOfDay.fromDateTime(end);
+    // CONDITION 2: Can only reschedule if confirmed
+    if (status != 'confirmed') {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Can only reschedule after confirmation (Condition 2).')),
+        );
+      }
+      return;
+    }
+
+    // Show reschedule dialog
+    DateTime date  = _dayKey(origStart);
+    TimeOfDay startTod = TimeOfDay.fromDateTime(origStart);
+    TimeOfDay endTod   = TimeOfDay.fromDateTime(origEnd);
 
     Future<void> pickDate() async {
       final picked = await showDatePicker(
         context: context,
         initialDate: date,
-        firstDate: DateTime.now(),
+        firstDate: DateTime.now().add(const Duration(hours: 24)),
         lastDate: DateTime.now().add(const Duration(days: 365)),
       );
       if (picked != null) setState(() => date = picked);
@@ -110,13 +181,12 @@ class _HopSchedulingPageState extends State<HopSchedulingPage> {
       if (picked != null) setState(() => isStart ? startTod = picked : endTod = picked);
     }
 
-    final ok = await showDialog<bool>(
+    final result = await showDialog<Map<String, dynamic>>(
       context: context,
       builder: (_) => StatefulBuilder(
         builder: (context, setStateDlg) {
-          String fmtT(TimeOfDay t) => _fmtTime(t);
           return AlertDialog(
-            title: const Text('Reschedule'),
+            title: const Text('Propose Reschedule'),
             content: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -135,7 +205,7 @@ class _HopSchedulingPageState extends State<HopSchedulingPage> {
                       child: ListTile(
                         dense: true,
                         title: const Text('Start'),
-                        subtitle: Text(fmtT(startTod)),
+                        subtitle: Text(_fmtTime(startTod)),
                         trailing: IconButton(
                           icon: const Icon(Icons.timer_outlined),
                           onPressed: () async { await pickTime(true); setStateDlg((){}); },
@@ -146,7 +216,7 @@ class _HopSchedulingPageState extends State<HopSchedulingPage> {
                       child: ListTile(
                         dense: true,
                         title: const Text('End'),
-                        subtitle: Text(fmtT(endTod)),
+                        subtitle: Text(_fmtTime(endTod)),
                         trailing: IconButton(
                           icon: const Icon(Icons.timer_outlined),
                           onPressed: () async { await pickTime(false); setStateDlg((){}); },
@@ -158,48 +228,141 @@ class _HopSchedulingPageState extends State<HopSchedulingPage> {
               ],
             ),
             actions: [
-              TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Close')),
-              FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Save')),
+              TextButton(onPressed: () => Navigator.pop(context, null), child: const Text('Close')),
+              FilledButton(onPressed: () {
+                Navigator.pop(context, {
+                  'date': date,
+                  'startTod': startTod,
+                  'endTod': endTod,
+                });
+              }, child: const Text('Next')),
             ],
           );
         },
       ),
     );
 
-    if (ok != true) return;
+    if (result == null || !mounted) return;
 
-    final startDt = DateTime(date.year, date.month, date.day, startTod.hour, startTod.minute);
-    final endDt   = DateTime(date.year, date.month, date.day, endTod.hour, endTod.minute);
+    final startDt = DateTime(result['date'].year, result['date'].month, result['date'].day,
+        result['startTod'].hour, result['startTod'].minute);
+    final endDt   = DateTime(result['date'].year, result['date'].month, result['date'].day,
+        result['endTod'].hour, result['endTod'].minute);
 
-    if (!startDt.isAfter(DateTime.now())) {
+    if (!startDt.isAfter(DateTime.now().add(const Duration(hours: 24)))) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('New start time must be in the future.')),
+          const SnackBar(content: Text('New time must be at least 24 hours from now.')),
         );
       }
       return;
     }
     if (!endDt.isAfter(startDt)) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('End time must be after start.')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('End time must be after start.')),
+        );
       }
       return;
     }
+
+    // Check for conflicts
     if (await _hasOverlap(helperId: helperId, startDt: startDt, endDt: endDt, excludeId: apptId)) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Conflicts with another booking.')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Conflicts with another booking.')),
+        );
       }
       return;
     }
 
-    await FirebaseFirestore.instance.collection('appointments').doc(apptId).update({
-      'startAt': Timestamp.fromDate(startDt),
-      'endAt': Timestamp.fromDate(endDt),
+    // Get reason
+    final reason = await _getReason(context, 'Reschedule');
+    if (reason == null || !mounted) return;
+
+    // Save as pending peer confirmation
+    await FirebaseFirestore.instance.collection('appointments').doc(apptId).set({
+      'status': 'pending_reschedule_hop',
+      'proposedStartAt': Timestamp.fromDate(startDt),
+      'proposedEndAt': Timestamp.fromDate(endDt),
+      'rescheduleReasonHop': reason,
       'updatedAt': FieldValue.serverTimestamp(),
-    });
+      'rescheduleReasonPeer': FieldValue.delete(),
+    }, SetOptions(merge: true));
 
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Rescheduled.')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Reschedule proposed. Waiting for peer confirmation.')),
+      );
+    }
+  }
+
+  // Accept reschedule proposed by Peer
+  Future<void> _acceptPeerReschedule(String apptId, Map<String, dynamic> m) async {
+    final propStart = m['proposedStartAt'] as Timestamp?;
+    final propEnd = m['proposedEndAt'] as Timestamp?;
+
+    if (propStart == null || propEnd == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Reschedule data incomplete.')),
+        );
+      }
+      return;
+    }
+
+    // Finalize reschedule
+    await FirebaseFirestore.instance.collection('appointments').doc(apptId).set({
+      'status': 'confirmed',
+      'startAt': propStart,
+      'endAt': propEnd,
+      'proposedStartAt': FieldValue.delete(),
+      'proposedEndAt': FieldValue.delete(),
+      'rescheduleReasonHop': FieldValue.delete(),
+      'rescheduleReasonPeer': FieldValue.delete(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Reschedule accepted.')),
+      );
+    }
+  }
+
+  // HOP Cancel
+  Future<void> _cancelAppointment(String apptId, Map<String, dynamic> m) async {
+    final startTs = m['startAt'] as Timestamp?;
+    if (startTs == null) return;
+
+    final start = startTs.toDate();
+    final status = (m['status'] ?? '').toString().toLowerCase().trim();
+    final hoursUntil = start.difference(DateTime.now()).inHours;
+
+    // CONDITION 1 & 2: Can cancel if pending, or confirmed with reason
+    bool canCancel = status == 'pending' || status == 'confirmed';
+
+    if (!canCancel) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Cannot cancel this appointment.')),
+        );
+      }
+      return;
+    }
+
+    // CONDITION 1: If confirmed and <= 24h, cannot reschedule but can cancel with reason
+    // CONDITION 2: If confirmed and > 24h, can cancel with reason
+    // Both cases require reason
+    final reason = await _getReason(context, 'Cancel');
+    if (reason == null || !mounted) return;
+
+    await _updateStatus(apptId, 'cancelled', cancellationReason: reason);
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Appointment cancelled.')),
+      );
     }
   }
 
@@ -225,7 +388,7 @@ class _HopSchedulingPageState extends State<HopSchedulingPage> {
               const SizedBox(height: 8),
 
               _CalendarArea(
-                hopUid: _uid, // <- filter by hopId (current HOP user)
+                hopUid: _uid,
                 focusedDay: _focusedDay,
                 selectedDay: _selectedDay,
                 format: _format,
@@ -242,35 +405,18 @@ class _HopSchedulingPageState extends State<HopSchedulingPage> {
                 children: [
                   Text('All Tasks', style: t.titleMedium),
                   const Spacer(),
-                  // Sorting is fixed to time only — dropdown removed
                 ],
               ),
               const SizedBox(height: 8),
 
               _DayTasksList(
-                hopUid: _uid, // <- filter by hopId
+                hopUid: _uid,
                 selectedDay: _selectedDay ?? DateTime.now(),
                 fmtDateLong: _fmtDateLong,
                 fmtTime: _fmtTime,
-
-                onCancel: (id) async {
-                  final doc = await FirebaseFirestore.instance.collection('appointments').doc(id).get();
-                  final m = doc.data() ?? {};
-                  final ts = m['startAt'];
-                  if (ts is! Timestamp) return;
-                  final start = ts.toDate();
-                  if (start.difference(DateTime.now()) < const Duration(hours: 24)) {
-                    if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Cancel not allowed within 24 hours of the appointment.')),
-                      );
-                    }
-                    return;
-                  }
-                  await _updateStatus(id, 'cancelled');
-                },
-
+                onCancel: (id, m) => _cancelAppointment(id, m),
                 onReschedule: (id, m) => _reschedule(context, id, m),
+                onAcceptReschedule: (id, m) => _acceptPeerReschedule(id, m),
               ),
             ],
           ),
@@ -280,7 +426,7 @@ class _HopSchedulingPageState extends State<HopSchedulingPage> {
   }
 }
 
-/* -------------------------- Header Bar (with logout) -------------------------- */
+/* -------------------------- Header Bar -------------------------- */
 
 class _HeaderBar extends StatelessWidget {
   const _HeaderBar();
@@ -365,7 +511,7 @@ class _HeaderBar extends StatelessWidget {
 /* ----------------------------- Calendar Area ----------------------------- */
 
 class _CalendarArea extends StatelessWidget {
-  final String hopUid; // filter by hopId
+  final String hopUid;
   final DateTime focusedDay;
   final DateTime? selectedDay;
   final CalendarFormat format;
@@ -387,15 +533,13 @@ class _CalendarArea extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // appointments scoped by HOP
     final appsStream = FirebaseFirestore.instance
         .collection('appointments')
-        .where('hopId', isEqualTo: hopUid)
+        .where('bookerId', isEqualTo: hopUid)
         .snapshots();
 
-    // optional: HOP events (if you use them)
     final eventsStream = FirebaseFirestore.instance
-        .collection('hop_events') // change/remove to match your schema
+        .collection('hop_events')
         .where('hopId', isEqualTo: hopUid)
         .snapshots();
 
@@ -495,13 +639,14 @@ class _DayCell extends StatelessWidget {
 /* ---------------------------- Day Tasks (List) ---------------------------- */
 
 class _DayTasksList extends StatelessWidget {
-  final String hopUid; // filter by hopId
+  final String hopUid;
   final DateTime selectedDay;
   final String Function(DateTime) fmtDateLong;
   final String Function(TimeOfDay) fmtTime;
 
-  final Future<void> Function(String id) onCancel;
+  final Future<void> Function(String id, Map<String,dynamic> m) onCancel;
   final Future<void> Function(String id, Map<String,dynamic> m) onReschedule;
+  final Future<void> Function(String id, Map<String,dynamic> m) onAcceptReschedule;
 
   const _DayTasksList({
     required this.hopUid,
@@ -510,6 +655,7 @@ class _DayTasksList extends StatelessWidget {
     required this.fmtTime,
     required this.onCancel,
     required this.onReschedule,
+    required this.onAcceptReschedule,
   });
 
   DateTime _key(DateTime d) => DateTime(d.year, d.month, d.day);
@@ -520,11 +666,11 @@ class _DayTasksList extends StatelessWidget {
 
     final appsStream = FirebaseFirestore.instance
         .collection('appointments')
-        .where('hopId', isEqualTo: hopUid)
+        .where('bookerId', isEqualTo: hopUid)
         .snapshots();
 
     final eventsStream = FirebaseFirestore.instance
-        .collection('hop_events') // change/remove to match your schema
+        .collection('hop_events')
         .where('hopId', isEqualTo: hopUid)
         .snapshots();
 
@@ -577,7 +723,6 @@ class _DayTasksList extends StatelessWidget {
               );
             }
 
-            // Sort by time only
             items.sort((a, b) => a.start.millisecondsSinceEpoch.compareTo(b.start.millisecondsSinceEpoch));
 
             return Column(
@@ -589,6 +734,7 @@ class _DayTasksList extends StatelessWidget {
                     fmtTime: fmtTime,
                     onCancel: onCancel,
                     onReschedule: onReschedule,
+                    onAcceptReschedule: onAcceptReschedule,
                   ),
                   const SizedBox(height: 12),
                 ]
@@ -603,18 +749,18 @@ class _DayTasksList extends StatelessWidget {
 
 class _TaskItem {
   final String id;
-  final String type; // appointment | event
+  final String type;
   final Map<String, dynamic> data;
 
   final DateTime start;
   final DateTime end;
-  final String status; // pending/confirmed/... or 'event'
+  final String status;
   final String venue;
   final String mode;
 
   final String helperId;
-  final String helperName; // optional cache if stored
-  final String title;      // used for events
+  final String helperName;
+  final String title;
 
   _TaskItem._({
     required this.id,
@@ -644,7 +790,7 @@ class _TaskItem {
       return v.isNotEmpty ? v : 'Campus';
     }();
 
-    final helperId = (m['helperId'] ?? m['tutorId'] ?? '').toString();
+    final helperId = (m['helperId'] ?? m['tutorId'] ?? '').toString().trim();
     final helperName = (m['tutorName'] ?? m['helperName'] ?? '').toString();
 
     return _TaskItem._(
@@ -658,7 +804,7 @@ class _TaskItem {
       mode: mode.isEmpty ? 'physical' : mode,
       helperId: helperId,
       helperName: helperName,
-      title: '', // not used for appointments
+      title: '',
     );
   }
 
@@ -689,8 +835,9 @@ class _TaskCard extends StatelessWidget {
   final _TaskItem item;
   final String Function(DateTime) fmtDateLong;
   final String Function(TimeOfDay) fmtTime;
-  final Future<void> Function(String id) onCancel;
+  final Future<void> Function(String id, Map<String, dynamic> m) onCancel;
   final Future<void> Function(String id, Map<String,dynamic> m) onReschedule;
+  final Future<void> Function(String id, Map<String,dynamic> m) onAcceptReschedule;
 
   const _TaskCard({
     required this.item,
@@ -698,6 +845,7 @@ class _TaskCard extends StatelessWidget {
     required this.fmtTime,
     required this.onCancel,
     required this.onReschedule,
+    required this.onAcceptReschedule,
   });
 
   String _pickName(Map<String, dynamic> m) {
@@ -736,7 +884,7 @@ class _TaskCard extends StatelessWidget {
     } else {
       switch (item.status) {
         case 'pending':
-          chipLabel = 'Confirmation Pending';
+          chipLabel = 'Awaiting Confirmation';
           chipBg = const Color(0xFFC9F2D9);
           chipFg = const Color(0xFF1B5E20);
           outline = const Color(0xFF2F8D46);
@@ -746,6 +894,18 @@ class _TaskCard extends StatelessWidget {
           chipBg = const Color(0xFFE3F2FD);
           chipFg = const Color(0xFF1565C0);
           outline = const Color(0xFF2F8D46);
+          break;
+        case 'pending_reschedule_hop':
+          chipLabel = 'Reschedule Pending';
+          chipBg = const Color(0xFFFFF3CD);
+          chipFg = const Color(0xFF8A6D3B);
+          outline = Colors.transparent;
+          break;
+        case 'pending_reschedule_peer':
+          chipLabel = 'Confirm Reschedule?';
+          chipBg = const Color(0xFFFFCC80);
+          chipFg = const Color(0xFFEF6C00);
+          outline = Colors.transparent;
           break;
         case 'cancelled':
           chipLabel = 'Cancelled';
@@ -774,14 +934,42 @@ class _TaskCard extends StatelessWidget {
     }
 
     final now = DateTime.now();
-    final canModify  = isAppt && item.start.difference(now) >= const Duration(hours: 24);
-    final canCancel = isAppt && (item.status == 'pending' || item.status == 'confirmed') && canModify;
-    final canReschedule = isAppt && (item.status != 'cancelled' && item.status != 'completed') && canModify;
+    final hoursUntil = item.start.difference(now).inHours;
+    final isWithin24Hours = hoursUntil <= 24;
+    final isUpcoming = item.start.isAfter(now);
 
-    // Title rules:
-    // - Appointment: "Tutor Meeting – {tutor name}"
-    //   tutor name from item.helperName or users/{helperId}
-    // - Event: item.title
+    // HOP BUSINESS LOGIC (Conditions 1, 2, 3)
+    bool canCancel = false;
+    bool canReschedule = false;
+    bool showAcceptReschedule = false;
+
+    if (isAppt && isUpcoming) {
+      if (item.status == 'pending') {
+        // CONDITION 1 & 2: Pending appointments
+        if (isWithin24Hours) {
+          // <= 24h: Wait for confirmation, can cancel with reason
+          canCancel = true;
+        } else {
+          // > 24h: Wait for confirmation, can cancel with reason
+          canCancel = true;
+        }
+      } else if (item.status == 'confirmed') {
+        // CONDITION 1: <= 24h, confirmed - can only cancel
+        if (isWithin24Hours) {
+          canCancel = true;
+        } else {
+          // CONDITION 2: > 24h, confirmed - can reschedule and cancel
+          canCancel = true;
+          canReschedule = true;
+        }
+      } else if (item.status == 'pending_reschedule_peer') {
+        // Peer proposed reschedule, HOP needs to confirm
+        showAcceptReschedule = true;
+        canCancel = true;
+      }
+    }
+
+    // Title
     Widget titleWidget;
     if (isAppt) {
       if (item.helperName.isNotEmpty) {
@@ -812,11 +1000,14 @@ class _TaskCard extends StatelessWidget {
       if (isAppt) {
         Navigator.pushNamed(
           context,
-          '/hop/booking', // adjust to your route
+          '/hop/booking',
           arguments: {'appointmentId': item.id},
         );
       }
     }
+
+    // Display reschedule reason if applicable
+    final rescheduleReasonPeer = (item.data['rescheduleReasonPeer'] ?? '').toString().trim();
 
     final card = Container(
       decoration: BoxDecoration(
@@ -854,6 +1045,14 @@ class _TaskCard extends StatelessWidget {
                 Text('Date: ${fmtDateLong(item.start)}', style: t.bodySmall),
                 Text('Time: $time', style: t.bodySmall),
                 Text('Venue: ${item.venue}', style: t.bodySmall),
+
+                // Show peer's reschedule reason
+                if (rescheduleReasonPeer.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Text('Peer Reason: $rescheduleReasonPeer',
+                      style: t.bodySmall?.copyWith(color: chipFg, fontWeight: FontWeight.w600)),
+                ],
+
                 const SizedBox(height: 8),
                 if (isAppt)
                   Align(
@@ -861,26 +1060,24 @@ class _TaskCard extends StatelessWidget {
                     child: Wrap(
                       spacing: 8,
                       children: [
-                        if (canCancel)
-                          _SmallBtn(label: 'Cancel', color: const Color(0xFFEF6C00), onTap: () async {
-                            if (!canCancel) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('Cancel not allowed within 24 hours of the appointment.')),
-                              );
-                              return;
-                            }
-                            await onCancel(item.id);
-                          }),
+                        if (showAcceptReschedule)
+                          _SmallBtn(
+                            label: 'Accept Reschedule',
+                            color: const Color(0xFF2E7D32),
+                            onTap: () async => onAcceptReschedule(item.id, item.data),
+                          ),
                         if (canReschedule)
-                          _SmallBtn(label: 'Reschedule', color: const Color(0xFF1565C0), onTap: () async {
-                            if (!canReschedule) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('Reschedule not allowed within 24 hours of the appointment.')),
-                              );
-                              return;
-                            }
-                            await onReschedule(item.id, item.data);
-                          }),
+                          _SmallBtn(
+                            label: 'Reschedule',
+                            color: const Color(0xFF1565C0),
+                            onTap: () async => onReschedule(item.id, item.data),
+                          ),
+                        if (canCancel)
+                          _SmallBtn(
+                            label: 'Cancel',
+                            color: const Color(0xFFEF6C00),
+                            onTap: () async => onCancel(item.id, item.data),
+                          ),
                       ],
                     ),
                   ),

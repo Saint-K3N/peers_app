@@ -15,7 +15,7 @@ class _SchoolCounsellorBookingInfoPageState extends State<SchoolCounsellorBookin
   bool _argsParsed = false;
   String? _appointmentId;
 
-  // Fallbacks (if helper/user doc isn’t available yet)
+  // Fallbacks (if helper/user doc isn't available yet)
   String _fbName = '—';
   String _fbFaculty = '—';
   String _fbEmail = '—';
@@ -56,6 +56,8 @@ class _SchoolCounsellorBookingInfoPageState extends State<SchoolCounsellorBookin
       case 'completed': return 'Completed';
       case 'cancelled': return 'Cancelled';
       case 'missed':    return 'Missed';
+      case 'pending_reschedule_peer': return 'Reschedule Pending (Peer)';
+      case 'pending_reschedule_sc': return 'Reschedule Pending (You)';
       default:          return 'Pending';
     }
   }
@@ -66,6 +68,9 @@ class _SchoolCounsellorBookingInfoPageState extends State<SchoolCounsellorBookin
       case 'completed': return (const Color(0xFFC8F2D2), const Color(0xFF2E7D32));
       case 'cancelled': return (const Color(0xFFFFE0E0), const Color(0xFFD32F2F));
       case 'missed':    return (const Color(0xFFFFF3E0), const Color(0xFFEF6C00));
+      case 'pending_reschedule_peer':
+      case 'pending_reschedule_sc':
+        return (const Color(0xFFFFF3CD), const Color(0xFF8A6D3B));
       default:          return (const Color(0xFFEDEEF1), const Color(0xFF6B7280));
     }
   }
@@ -93,7 +98,7 @@ class _SchoolCounsellorBookingInfoPageState extends State<SchoolCounsellorBookin
       if (excludeId != null && d.id == excludeId) continue;
       final m = d.data();
       final status = (m['status'] ?? '').toString().toLowerCase().trim();
-      if (status != 'pending' && status != 'confirmed') continue;
+      if (status != 'pending' && status != 'confirmed' && status != 'pending_reschedule_peer' && status != 'pending_reschedule_sc') continue;
 
       final tsStart = m['startAt'];
       final tsEnd   = m['endAt'];
@@ -107,13 +112,15 @@ class _SchoolCounsellorBookingInfoPageState extends State<SchoolCounsellorBookin
     return false;
   }
 
+  // SC Reschedule function with 20-char reason
   Future<void> _reschedule(BuildContext context, String apptId, Map<String, dynamic> m) async {
     final helperId = (m['helperId'] ?? '').toString();
     DateTime start = (m['startAt'] as Timestamp).toDate();
     DateTime end   = (m['endAt']   as Timestamp).toDate();
 
     // School Counsellor rule: no reschedule within 24h
-    if (start.difference(DateTime.now()) < const Duration(hours: 24)) {
+    final hoursUntilStart = start.difference(DateTime.now()).inHours;
+    if (hoursUntilStart <= 24) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Reschedule not allowed within 24 hours of the appointment.')),
@@ -122,159 +129,131 @@ class _SchoolCounsellorBookingInfoPageState extends State<SchoolCounsellorBookin
       return;
     }
 
-    DateTime date  = DateTime(start.year, start.month, start.day);
-    TimeOfDay startTod = TimeOfDay.fromDateTime(start);
-    TimeOfDay endTod   = TimeOfDay.fromDateTime(end);
-
-    Future<void> pickDate() async {
-      final picked = await showDatePicker(
-        context: context,
-        initialDate: date,
-        firstDate: DateTime.now(),
-        lastDate: DateTime.now().add(const Duration(days: 365)),
-      );
-      if (picked != null) setState(() => date = picked);
-    }
-
-    Future<void> pickTime(bool isStart) async {
-      final picked = await showTimePicker(
-        context: context,
-        initialTime: isStart ? startTod : endTod,
-      );
-      if (picked != null) {
-        setState(() {
-          if (isStart) {
-            startTod = picked;
-          } else {
-            endTod = picked;
-          }
-        });
-      }
-    }
-
-    final ok = await showDialog<bool>(
+    final result = await showDialog<Map<String, dynamic>>(
       context: context,
-      builder: (_) => StatefulBuilder(
-        builder: (context, setStateDlg) {
-          return AlertDialog(
-            title: const Text('Reschedule'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                ListTile(
-                  dense: true,
-                  title: const Text('Date'),
-                  subtitle: Text(_fmtDate(date)),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.calendar_month_outlined),
-                    onPressed: () async { await pickDate(); setStateDlg((){}); },
-                  ),
-                ),
-                Row(
-                  children: [
-                    Expanded(
-                      child: ListTile(
-                        dense: true,
-                        title: const Text('Start'),
-                        subtitle: Text(_fmtTime(startTod)),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.timer_outlined),
-                          onPressed: () async { await pickTime(true); setStateDlg((){}); },
-                        ),
-                      ),
-                    ),
-                    Expanded(
-                      child: ListTile(
-                        dense: true,
-                        title: const Text('End'),
-                        subtitle: Text(_fmtTime(endTod)),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.timer_outlined),
-                          onPressed: () async { await pickTime(false); setStateDlg((){}); },
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Close')),
-              FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Save')),
-            ],
-          );
-        },
-      ),
+      builder: (_) => _RescheduleDialogSC(currentStart: start, currentEnd: end),
     );
 
-    if (ok != true) return;
+    if (result == null) return;
 
-    final startDt = DateTime(date.year, date.month, date.day, startTod.hour, startTod.minute);
-    final endDt   = DateTime(date.year, date.month, date.day, endTod.hour, endTod.minute);
+    final DateTime newStart = result['start'];
+    final DateTime newEnd = result['end'];
+    final String reason = result['reason'];
 
-    if (!startDt.isAfter(DateTime.now())) {
+    if (!newStart.isAfter(DateTime.now())) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('New start time must be in the future.')));
       }
       return;
     }
-    if (!endDt.isAfter(startDt)) {
+    if (!newEnd.isAfter(newStart)) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('End time must be after start.')));
       }
       return;
     }
-    if (await _hasOverlap(helperId: helperId, startDt: startDt, endDt: endDt, excludeId: apptId)) {
+    if (await _hasOverlap(helperId: helperId, startDt: newStart, endDt: newEnd, excludeId: apptId)) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Conflicts with another booking.')));
       }
       return;
     }
 
+    // IMPORTANT: Keep original startAt/endAt, store proposed times
     await FirebaseFirestore.instance.collection('appointments').doc(apptId).update({
-      'startAt': Timestamp.fromDate(startDt),
-      'endAt': Timestamp.fromDate(endDt),
+      'proposedStartAt': Timestamp.fromDate(newStart),
+      'proposedEndAt': Timestamp.fromDate(newEnd),
+      'rescheduleReasonSC': reason,
+      'status': 'pending_reschedule_sc',
       'updatedAt': FieldValue.serverTimestamp(),
     });
 
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Rescheduled.')));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Reschedule proposed. Waiting for peer confirmation.')));
     }
   }
 
+  // Accept Peer's Reschedule
+  Future<void> _acceptPeerReschedule(String apptId, Map<String, dynamic> m) async {
+    final helperId = (m['helperId'] ?? '').toString();
+    final newStartTs = m['proposedStartAt'] as Timestamp?;
+    final newEndTs   = m['proposedEndAt'] as Timestamp?;
+
+    if (newStartTs == null || newEndTs == null) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Reschedule data is incomplete.')));
+      return;
+    }
+
+    final newStartDt = newStartTs.toDate();
+    final newEndDt   = newEndTs.toDate();
+
+    if (await _hasOverlap(helperId: helperId, startDt: newStartDt, endDt: newEndDt, excludeId: apptId)) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Proposed time conflicts with counsellor schedule.')));
+      return;
+    }
+
+    try {
+      // Accept: Move proposed times to actual times, clear proposed fields
+      await FirebaseFirestore.instance.collection('appointments').doc(apptId).update({
+        'status': 'confirmed',
+        'startAt': newStartTs,
+        'endAt': newEndTs,
+        'proposedStartAt': FieldValue.delete(),
+        'proposedEndAt': FieldValue.delete(),
+        'rescheduleReasonPeer': FieldValue.delete(),
+        'rescheduleReasonSC': FieldValue.delete(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Reschedule confirmed and appointment updated.')));
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Confirmation failed: $e')));
+    }
+  }
+
+  // Cancel with 20-char reason
   Future<void> _cancelExisting(String appointmentId, DateTime startAt, String status) async {
     // Rule: can cancel only ≥ 24h before; not if already completed/cancelled
-    final canModify = startAt.difference(DateTime.now()) >= const Duration(hours: 24);
-    if (!canModify || status == 'completed' || status == 'cancelled') {
+    final hoursUntilStart = startAt.difference(DateTime.now()).inHours;
+    final canModify = hoursUntilStart >= 24;
+    if (!canModify || status == 'completed' || status == 'cancelled' || status == 'missed') {
       _msg('Cancel not allowed now.');
       return;
     }
 
-    final ok = await showDialog<bool>(
+    final reason = await showDialog<String>(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Cancel this booking?'),
-        content: const Text('This action cannot be undone.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Keep')),
-          FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Cancel'),
-          ),
-        ],
+      builder: (_) => const _ReasonDialog(
+        title: 'Cancel Booking',
+        maxChars: 20,
+        hint: 'Reason for cancellation (Max 20 characters)',
       ),
     );
-    if (ok == true && mounted) {
-      try {
-        await _updateStatus(appointmentId, 'cancelled');
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Appointment cancelled.')));
-        Navigator.maybePop(context);
-      } catch (e) {
-        if (!mounted) return;
-        _msg('Cancel failed: $e');
-      }
+
+    if (reason == null) return;
+
+    if (reason.isEmpty) {
+      _msg('Please enter a reason (max 20 characters).');
+      return;
+    }
+
+    try {
+      await FirebaseFirestore.instance.collection('appointments').doc(appointmentId).update({
+        'status': 'cancelled',
+        'cancellationReason': reason,
+        'cancelledBy': 'school_counsellor',
+        'updatedAt': FieldValue.serverTimestamp(),
+        'proposedStartAt': FieldValue.delete(),
+        'proposedEndAt': FieldValue.delete(),
+        'rescheduleReasonPeer': FieldValue.delete(),
+        'rescheduleReasonSC': FieldValue.delete(),
+      });
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Appointment cancelled.')));
+      Navigator.maybePop(context);
+    } catch (e) {
+      if (!mounted) return;
+      _msg('Cancel failed: $e');
     }
   }
 
@@ -340,19 +319,74 @@ class _SchoolCounsellorBookingInfoPageState extends State<SchoolCounsellorBookin
               final m = snap.data!.data()!;
               final start = (m['startAt'] as Timestamp?)?.toDate();
               final end = (m['endAt'] as Timestamp?)?.toDate();
+
+              // Proposed times (if rescheduling)
+              final proposedStart = (m['proposedStartAt'] as Timestamp?)?.toDate();
+              final proposedEnd = (m['proposedEndAt'] as Timestamp?)?.toDate();
+
               final loc = (m['location'] ?? '').toString();
               final notes = (m['notes'] ?? '').toString();
               final statusRaw = (m['status'] ?? 'pending').toString();
               final helperIdFromDoc = (m['helperId'] ?? '').toString();
 
+              final cancellationReason = (m['cancellationReason'] ?? '').toString().trim();
+              final rescheduleReasonPeer = (m['rescheduleReasonPeer'] ?? '').toString().trim();
+              final rescheduleReasonSC = (m['rescheduleReasonSC'] ?? '').toString().trim();
+
               final statusLbl = _statusLabel(statusRaw);
               final (chipBg, chipFg) = _statusColors(statusRaw);
 
               final now = DateTime.now();
-              // School Counsellor cannot confirm — only reschedule/cancel visibility:
-              final canModify = start != null && start.difference(now) >= const Duration(hours: 24);
-              final canCancel = (statusRaw == 'pending' || statusRaw == 'confirmed') && canModify;
-              final canReschedule = (statusRaw != 'cancelled' && statusRaw != 'completed') && canModify;
+              final hasStart = start != null;
+              final isConfirmed = statusRaw == 'confirmed';
+              final isPending = statusRaw == 'pending';
+              final isTerminal = statusRaw == 'cancelled' || statusRaw == 'completed' || statusRaw == 'missed';
+              final isPast = hasStart && !now.isBefore(start!);
+              final hoursUntilStart = hasStart ? start!.difference(now).inHours : 999;
+              final isWithin24Hours = hoursUntilStart <= 24;
+
+              // Can mark complete/missed after original start time, even if reschedule pending
+              final canOutcome = hasStart && isPast && !isTerminal;
+
+              // --- SC BUSINESS LOGIC (Conditions 1 & 2) ---
+              bool canSCCancel = false;
+              bool canSCReschedule = false;
+              final isPendingPeerReschedule = statusRaw == 'pending_reschedule_peer';
+              final isPendingSCReschedule = statusRaw == 'pending_reschedule_sc';
+
+              if (hasStart && !isTerminal && !isPast) {
+                if (isPendingPeerReschedule) {
+                  // Special state: SC must confirm peer's proposal
+                  canSCCancel = false;
+                  canSCReschedule = false;
+                } else if (isPendingSCReschedule) {
+                  // Waiting for peer to confirm SC's proposal
+                  canSCCancel = false;
+                  canSCReschedule = false;
+                } else if (isWithin24Hours) {
+                  // Condition 1: <= 24 hours
+                  if (isPending) {
+                    // Rule: SC can cancel with reason before confirmation
+                    canSCCancel = true;
+                    canSCReschedule = false;
+                  } else if (isConfirmed) {
+                    // Rule: SC can cancel with reason, no reschedule
+                    canSCCancel = true;
+                    canSCReschedule = false;
+                  }
+                } else {
+                  // Condition 2: > 24 hours
+                  if (isPending) {
+                    // Rule: SC can cancel with reason, no reschedule before confirmation
+                    canSCCancel = true;
+                    canSCReschedule = false;
+                  } else if (isConfirmed) {
+                    // Rule: SC can reschedule or cancel with reason
+                    canSCCancel = true;
+                    canSCReschedule = true;
+                  }
+                }
+              }
 
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -386,24 +420,41 @@ class _SchoolCounsellorBookingInfoPageState extends State<SchoolCounsellorBookin
                   ),
                   const SizedBox(height: 12),
 
+                  // Display Reschedule Reasons
+                  if (rescheduleReasonSC.isNotEmpty) ...[
+                    _ReasonContainer(label: 'Your Reschedule Reason', reason: rescheduleReasonSC, isReschedule: true),
+                    const SizedBox(height: 12),
+                  ] else if (rescheduleReasonPeer.isNotEmpty) ...[
+                    _ReasonContainer(label: 'Peer Reschedule Reason', reason: rescheduleReasonPeer, isReschedule: true),
+                    const SizedBox(height: 12),
+                  ],
+
+                  // Display Cancellation Reason
+                  if (statusRaw == 'cancelled' && cancellationReason.isNotEmpty) ...[
+                    _ReasonContainer(label: 'Cancellation Reason', reason: cancellationReason, isAlert: true),
+                    const SizedBox(height: 12),
+                  ],
+
+                  // ORIGINAL DATE (always show)
                   _FieldShell(
                     child: Row(
                       children: [
-                        Expanded(child: Text((start != null) ? _fmtDate(start) : '—', style: t.bodyMedium)),
+                        Expanded(child: Text((start != null) ? 'Original Date: ${_fmtDate(start)}' : 'Date: —', style: t.bodyMedium)),
                         const Icon(Icons.calendar_month_outlined),
                       ],
                     ),
                   ),
                   const SizedBox(height: 8),
 
+                  // ORIGINAL TIME (always show)
                   _FieldShell(
                     child: Row(
                       children: [
                         Expanded(
                           child: Text(
                             (start != null && end != null)
-                                ? '${_fmtTime(TimeOfDay.fromDateTime(start))}  to  ${_fmtTime(TimeOfDay.fromDateTime(end))}'
-                                : '—',
+                                ? 'Original Time: ${_fmtTime(TimeOfDay.fromDateTime(start))} to ${_fmtTime(TimeOfDay.fromDateTime(end))}'
+                                : 'Time: —',
                             style: t.bodyMedium,
                           ),
                         ),
@@ -412,6 +463,42 @@ class _SchoolCounsellorBookingInfoPageState extends State<SchoolCounsellorBookin
                     ),
                   ),
                   const SizedBox(height: 8),
+
+                  // PROPOSED DATE (if reschedule pending)
+                  if (proposedStart != null) ...[
+                    _FieldShell(
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              'Proposed Date: ${_fmtDate(proposedStart)}',
+                              style: t.bodyMedium?.copyWith(color: const Color(0xFF8A6D3B), fontWeight: FontWeight.w700),
+                            ),
+                          ),
+                          const Icon(Icons.calendar_month_outlined, color: Color(0xFF8A6D3B)),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+
+                  // PROPOSED TIME (if reschedule pending)
+                  if (proposedStart != null && proposedEnd != null) ...[
+                    _FieldShell(
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              'Proposed Time: ${_fmtTime(TimeOfDay.fromDateTime(proposedStart))} to ${_fmtTime(TimeOfDay.fromDateTime(proposedEnd))}',
+                              style: t.bodyMedium?.copyWith(color: const Color(0xFF8A6D3B), fontWeight: FontWeight.w700),
+                            ),
+                          ),
+                          const Icon(Icons.timer_outlined, color: Color(0xFF8A6D3B)),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
 
                   _FieldShell(
                     child: Row(
@@ -441,7 +528,7 @@ class _SchoolCounsellorBookingInfoPageState extends State<SchoolCounsellorBookin
                   ),
                   const SizedBox(height: 12),
 
-                  // Footer actions — ONLY reschedule/cancel and only ≥ 24h before
+                  // Footer actions
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -449,17 +536,48 @@ class _SchoolCounsellorBookingInfoPageState extends State<SchoolCounsellorBookin
                       Wrap(
                         spacing: 8,
                         children: [
-                          if (start != null && canReschedule)
+                          // Action: Accept Reschedule (when peer proposed)
+                          if (isPendingPeerReschedule && start != null)
+                            FilledButton(
+                              style: FilledButton.styleFrom(backgroundColor: const Color(0xFF2E7D32)),
+                              onPressed: () => _acceptPeerReschedule(_appointmentId!, m),
+                              child: const Text('Accept Reschedule'),
+                            ),
+
+                          // Action: Reschedule (only confirmed & > 24h)
+                          if (canSCReschedule && start != null && end != null)
                             FilledButton.tonal(
                               onPressed: () => _reschedule(context, _appointmentId!, m),
                               child: const Text('Reschedule'),
                             ),
-                          if (start != null && canCancel)
+
+                          // Action: Cancel (with reason)
+                          if (canSCCancel && start != null)
                             FilledButton(
                               style: FilledButton.styleFrom(backgroundColor: Colors.red),
                               onPressed: () => _cancelExisting(_appointmentId!, start, statusRaw),
                               child: const Text('Cancel Booking'),
                             ),
+
+                          // Action: Mark Outcome (after original start time, even if reschedule pending)
+                          if (canOutcome && start != null) ...[
+                            FilledButton(
+                              style: FilledButton.styleFrom(backgroundColor: const Color(0xFF2E7D32)),
+                              onPressed: () async {
+                                await _updateStatus(_appointmentId!, 'completed');
+                                if (mounted) _msg('Marked as completed.');
+                              },
+                              child: const Text('Complete'),
+                            ),
+                            FilledButton(
+                              style: FilledButton.styleFrom(backgroundColor: const Color(0xFF8A6D3B)),
+                              onPressed: () async {
+                                await _updateStatus(_appointmentId!, 'missed');
+                                if (mounted) _msg('Marked as missed.');
+                              },
+                              child: const Text('Missed'),
+                            ),
+                          ],
                         ],
                       ),
                     ],
@@ -877,5 +995,212 @@ class _SpecializeLine extends StatelessWidget {
       if (i != items.length - 1) spans.add(TextSpan(text: ', ', style: t.bodySmall));
     }
     return Text.rich(TextSpan(children: spans));
+  }
+}
+
+// Consolidated Reason Container (handles cancel and reschedule reasons)
+class _ReasonContainer extends StatelessWidget {
+  final String label;
+  final String reason;
+  final bool isAlert;
+  final bool isReschedule;
+
+  const _ReasonContainer({required this.label, required this.reason, this.isAlert = false, this.isReschedule = false});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = Theme.of(context).textTheme;
+    final bgColor = isAlert ? const Color(0xFFFFE0E0) : (isReschedule ? const Color(0xFFE3F2FD) : const Color(0xFFF3E5F5));
+    final borderColor = isAlert ? const Color(0xFFD32F2F) : (isReschedule ? const Color(0xFF1565C0) : const Color(0xFF9C27B0));
+    final labelColor = isAlert ? const Color(0xFFD32F2F) : (isReschedule ? const Color(0xFF1565C0) : const Color(0xFF9C27B0));
+
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: borderColor, width: 1),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: t.labelMedium?.copyWith(fontWeight: FontWeight.w700, color: labelColor)),
+          const SizedBox(height: 4),
+          Text(reason.isEmpty ? '—' : reason, style: t.bodyMedium),
+        ],
+      ),
+    );
+  }
+}
+
+// Simplified _ReasonDialog to use only the 20-char text field
+class _ReasonDialog extends StatelessWidget {
+  final String title;
+  final int maxChars;
+  final String hint;
+  const _ReasonDialog({required this.title, required this.maxChars, this.hint = 'Reason'});
+
+  @override
+  Widget build(BuildContext context) {
+    final ctrl = TextEditingController();
+    return AlertDialog(
+      title: Text(title),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Please provide a reason (Max $maxChars characters):'),
+          const SizedBox(height: 12),
+          TextField(
+            controller: ctrl,
+            decoration: InputDecoration(
+              hintText: hint,
+              border: const OutlineInputBorder(),
+              counterText: '',
+            ),
+            maxLines: 2,
+            maxLength: maxChars,
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context, null), child: const Text('Close')),
+        FilledButton(
+          style: FilledButton.styleFrom(backgroundColor: Colors.red),
+          onPressed: () {
+            final reason = ctrl.text.trim();
+            if (reason.isEmpty || reason.length > maxChars) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('A reason (max $maxChars characters) is required.')));
+            } else {
+              Navigator.pop(context, reason);
+            }
+          },
+          child: Text(title.contains('Cancel') ? 'Confirm Cancel' : 'Confirm'),
+        ),
+      ],
+    );
+  }
+}
+
+// Reschedule Dialog (SC initiated)
+class _RescheduleDialogSC extends StatefulWidget {
+  final DateTime currentStart, currentEnd;
+  const _RescheduleDialogSC({required this.currentStart, required this.currentEnd});
+  @override
+  State<_RescheduleDialogSC> createState() => _RescheduleDialogSCState();
+}
+
+class _RescheduleDialogSCState extends State<_RescheduleDialogSC> {
+  late DateTime _date;
+  late TimeOfDay _startTod, _endTod;
+  final _reasonCtrl = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _date = DateTime(widget.currentStart.year, widget.currentStart.month, widget.currentStart.day);
+    _startTod = TimeOfDay.fromDateTime(widget.currentStart);
+    _endTod = TimeOfDay.fromDateTime(widget.currentEnd);
+  }
+
+  @override
+  void dispose() {
+    _reasonCtrl.dispose();
+    super.dispose();
+  }
+
+  String _fmtDate(DateTime d) => '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}';
+
+  String _fmtTime(TimeOfDay t) {
+    final h = t.hourOfPeriod == 0 ? 12 : t.hourOfPeriod;
+    final m = t.minute.toString().padLeft(2, '0');
+    final ap = t.period == DayPeriod.am ? 'AM' : 'PM';
+    return '$h:$m $ap';
+  }
+
+  Future<void> _pickDate() async {
+    final p = await showDatePicker(
+        context: context,
+        initialDate: _date,
+        firstDate: DateTime.now(),
+        lastDate: DateTime.now().add(const Duration(days: 365))
+    );
+    if (p != null) setState(() => _date = p);
+  }
+
+  Future<void> _pickTime(bool isStart) async {
+    final p = await showTimePicker(context: context, initialTime: isStart ? _startTod : _endTod);
+    if (p != null) setState(() => isStart ? _startTod = p : _endTod = p);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Reschedule'),
+      content: SingleChildScrollView(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          ListTile(
+              dense: true,
+              title: const Text('Date'),
+              subtitle: Text(_fmtDate(_date)),
+              trailing: IconButton(icon: const Icon(Icons.calendar_month_outlined), onPressed: _pickDate)
+          ),
+          Row(children: [
+            Expanded(
+                child: ListTile(
+                    dense: true,
+                    title: const Text('Start'),
+                    subtitle: Text(_fmtTime(_startTod)),
+                    trailing: IconButton(icon: const Icon(Icons.timer_outlined), onPressed: () => _pickTime(true))
+                )
+            ),
+            Expanded(
+                child: ListTile(
+                    dense: true,
+                    title: const Text('End'),
+                    subtitle: Text(_fmtTime(_endTod)),
+                    trailing: IconButton(icon: const Icon(Icons.timer_outlined), onPressed: () => _pickTime(false))
+                )
+            ),
+          ]),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _reasonCtrl,
+            decoration: const InputDecoration(
+                hintText: 'Reason for rescheduling (Max 20 characters)',
+                border: OutlineInputBorder(),
+                counterText: ''
+            ),
+            maxLines: 2,
+            maxLength: 20,
+          ),
+        ]),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
+        FilledButton(onPressed: () {
+          final start = DateTime(_date.year, _date.month, _date.day, _startTod.hour, _startTod.minute);
+          final end = DateTime(_date.year, _date.month, _date.day, _endTod.hour, _endTod.minute);
+          final reason = _reasonCtrl.text.trim();
+
+          if (end.isBefore(start) || end.isAtSameMomentAs(start)) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('End time must be after start time.')));
+            return;
+          }
+          if (start.isBefore(DateTime.now())) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('New time must be in the future.')));
+            return;
+          }
+          if (reason.isEmpty || reason.length > 20) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('A reason (max 20 chars) is required.')));
+            return;
+          }
+
+          Navigator.pop(context, {'start': start, 'end': end, 'reason': reason});
+        }, child: const Text('Save')),
+      ],
+    );
   }
 }

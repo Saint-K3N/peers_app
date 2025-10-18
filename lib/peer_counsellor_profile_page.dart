@@ -967,24 +967,24 @@ class _PeersYouWorkedWith extends StatelessWidget {
   const _PeersYouWorkedWith({required this.helperId});
 
   Future<List<_PeerMini>> _loadPeers() async {
+    // CRITICAL FIX: Only fetch COMPLETED appointments
     final appts = await FirebaseFirestore.instance
         .collection('appointments')
         .where('helperId', isEqualTo: helperId)
+        .where('status', isEqualTo: 'completed')  // ✅ ADDED: Only completed sessions
         .get();
 
     final completedByStudent =
     <String, List<QueryDocumentSnapshot<Map<String, dynamic>>>>{};
 
-    // Filter appointments to only consider completed sessions
+    // Group completed sessions by peer/student
     for (final d in appts.docs) {
       final s = (d['studentId'] ?? '').toString();
-      // Check for 'completed' status
-      final status = (d['status'] ?? '').toString().toLowerCase().trim();
-      if (s.isEmpty || status != 'completed') continue;
+      if (s.isEmpty) continue;
       (completedByStudent[s] ??= []).add(d);
     }
 
-    // Only proceed with students that have at least one completed session
+    // Only proceed with peers that have at least one completed session
     if (completedByStudent.isEmpty) return [];
 
     final peers = <_PeerMini>[];
@@ -1042,7 +1042,7 @@ class _PeersYouWorkedWith extends StatelessWidget {
   }
 
   void _openPeerDetail(BuildContext context, _PeerMini p) {
-    // Route to the peer counsellor's specific peer detail page
+    // ✅ REDIRECT: Navigate to the peer counsellor's specific peer detail page
     Navigator.pushNamed(
       context,
       '/counsellor/peers/detail',
@@ -1074,7 +1074,7 @@ class _PeersYouWorkedWith extends StatelessWidget {
                   runSpacing: 12,
                   children: peers.map((p) {
                     return InkWell(
-                      onTap: () => _openPeerDetail(context, p),
+                      onTap: () => _openPeerDetail(context, p),  // ✅ Tap redirects to detail page
                       borderRadius: BorderRadius.circular(12),
                       child: Ink(
                         padding: const EdgeInsets.symmetric(

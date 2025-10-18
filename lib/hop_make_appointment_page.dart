@@ -11,45 +11,137 @@ class HopMakeAppointmentPage extends StatefulWidget {
   State<HopMakeAppointmentPage> createState() => _HopMakeAppointmentPageState();
 }
 
+// COMBINED STATE CLASS
 class _HopMakeAppointmentPageState extends State<HopMakeAppointmentPage> {
+  // OLD UI STATE
   DateTime? _date;
   TimeOfDay? _startTime;
   TimeOfDay? _endTime;
   String? _sessionType;
-
   String _mode = 'online'; // 'online' | 'physical'
   String? _venue; // only when _mode == 'physical'
   final List<String> _venueOptions = const [
-    'Campus - Level 3',
-    'Campus - Level 5',
+    'Campus - Level 2 ',
+    'Campus - Level 3 Cubicles',
+    'Campus - Level 4 Cubicles',
+    'Campus - Level 5 ',
+    'Campus - Level 6 ',
     'Library - Discussion Room',
-    'Student Centre',
+    'Campus - Rooftop',
+    '',
   ];
+
+  // NEW LOGIC STATE/CACHING
+  bool _argsParsed = false;
+  String? _appointmentId; //
+  String _helperId = '';
+  // Caching helper info for saving
+  String _helperName = '';
+  String _helperFacultyId = '';
+  String _helperRole = ''; // Used to determine session types
 
   String get _uid => FirebaseAuth.instance.currentUser?.uid ?? '';
 
-  // NEW: Helper to get HOP's name and role from the 'users' collection
-  Future<Map<String, String>> _getBookerInfo() async {
-    final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
-    if (uid.isEmpty) return {'name': 'HOP User', 'role': 'Head of Program'};
+  // Fallbacks (for _HelperHeader in the build method)
+  String _fbName = '—';
+  List<String> _fbSpecializes = const <String>[];
 
-    final snap = await FirebaseFirestore.instance.collection('users').doc(uid).get();
-    final data = snap.data() ?? {};
+  // Session types (depend on helper role, from new logic)
+  final List<String> _tutorSessionTypes = const [
+    'Assignment Discussion', 'Study Strategy', 'Exam Revision', 'Q&A / Doubts'
+  ];
+  final List<String> _counsellorSessionTypes = const [
+    'Stress & Anxiety Management', 'Academic Pressure', 'Personal Growth', 'Relationship Advice'
+  ];
+  List<String> get _sessionTypeOptions => _helperRole == 'peer_counsellor'
+      ? _counsellorSessionTypes : _tutorSessionTypes;
 
-    // Prioritize display name fields
-    String name = (data['fullName'] ?? data['name'] ?? data['displayName'] ?? 'HOP User').toString();
-    // Use role field or default to 'Head of Program'
-    String role = (data['role'] ?? 'Head of Program').toString();
-
-    // Simple role normalization check based on common roles
-    final normalizedRole = role.toLowerCase().trim();
-    if (normalizedRole == 'hop') role = 'Head of Program';
-
-    return {'name': name, 'role': role};
-  }
-
+  // OLD UI: Controller for notes
   final _notesCtrl = TextEditingController();
   bool _saving = false;
+
+
+  /* ---------------------- NEW LOGIC: DID CHANGED DEPENDENCIES --------------------- */
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_argsParsed) return;
+    _argsParsed = true;
+
+    final args = (ModalRoute.of(context)?.settings.arguments as Map?) ?? {};
+    _appointmentId = (args['appointmentId'] as String?);
+    _helperId = (args['tutorId'] ?? args['helperId'] ?? args['userId'] ?? '').toString();
+
+    // Set fallbacks for the UI (from old code's args parsing)
+    _fbName = (args['tutorName'] ?? args['name'] ?? '—').toString();
+    _fbSpecializes = switch (args['specializes']) {
+      List l => l.map((e) => e.toString()).toList(),
+      _ => const <String>[],
+    };
+
+    // If editing, load existing data
+    if (_appointmentId != null && _appointmentId!.isNotEmpty) {
+      _loadExistingData(_appointmentId!);
+    }
+  }
+
+  // NEW LOGIC: Load appointment data when editing
+  Future<void> _loadExistingData(String id) async {
+    try {
+      final snap = await FirebaseFirestore.instance.collection('appointments').doc(id).get();
+      if (!snap.exists) return;
+
+      final m = snap.data() ?? {};
+      // Note: New schema uses 'start'/'end', old one used 'startAt'/'endAt'
+      final start = (m['start'] as Timestamp?)?.toDate();
+      final end = (m['end'] as Timestamp?)?.toDate();
+
+      setState(() {
+        _helperId = (m['helperId'] ?? '').toString();
+        _sessionType = (m['sessionType'] as String?);
+        _mode = (m['mode'] as String?) ?? 'online';
+        _venue = (m['venue'] as String?);
+        _notesCtrl.text = (m['notes'] as String?) ?? '';
+
+        if (start != null) {
+          _date = start;
+          _startTime = TimeOfDay.fromDateTime(start);
+        }
+        if (end != null) {
+          _endTime = TimeOfDay.fromDateTime(end);
+        }
+      });
+    } catch (e) {
+      debugPrint('Error loading appointment: $e');
+    }
+  }
+
+  // NEW LOGIC: Helper to get HOP's name, role, and faculty from the 'users' collection
+  Future<Map<String, String>> _getBookerInfo() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    if (uid.isEmpty) return {'name': 'HOP User', 'role': 'hop', 'facultyId': ''};
+    // Prioritize display name fields
+    String name = 'HOP User', role = 'hop', facultyId = '';
+
+    try {
+      final snap = await FirebaseFirestore.instance.collection('users').doc(uid).get();
+      final data = snap.data() ?? {};
+      name = (data['fullName'] ?? data['name'] ?? data['displayName'] ?? 'HOP User').toString();
+      role = (data['role'] ?? 'hop').toString();
+      facultyId = (data['facultyId'] ?? '').toString();
+
+      // Normalize role for data saving (keep the new simpler role for data model)
+      if (role.toLowerCase().trim() == 'head of program') role = 'hop';
+
+    } catch (e) {
+      debugPrint('Error fetching booker info: $e');
+    }
+    return {'name': name, 'role': role, 'facultyId': facultyId};
+  }
+
+
+  /* -------------------------- OLD UI HELPER METHODS ------------------------- */
 
   @override
   void dispose() {
@@ -76,34 +168,6 @@ class _HopMakeAppointmentPageState extends State<HopMakeAppointmentPage> {
     return rounded.isAfter(dt) ? rounded : rounded.add(const Duration(minutes: 15));
   }
 
-  Future<void> _pickDate() async {
-    final now = DateTime.now();
-    final picked = await showDatePicker(
-      context: context,
-      initialDate: _date ?? now,
-      firstDate: DateTime(now.year, now.month, now.day),
-      lastDate: now.add(const Duration(days: 365)),
-    );
-    if (picked != null) {
-      setState(() {
-        _date = picked;
-        if (_isToday(picked)) {
-          final ceil = _ceilToQuarter(DateTime.now());
-          _startTime ??= TimeOfDay(hour: ceil.hour, minute: ceil.minute);
-          // keep end after start
-          if (_endTime != null) {
-            final startDT = _combine(picked, _startTime!);
-            final endDT = _combine(picked, _endTime!);
-            if (!endDT.isAfter(startDT)) {
-              final bumped = startDT.add(const Duration(minutes: 30));
-              _endTime = TimeOfDay(hour: bumped.hour, minute: bumped.minute);
-            }
-          }
-        }
-      });
-    }
-  }
-
   bool _isToday(DateTime d) {
     final n = DateTime.now();
     return d.year == n.year && d.month == n.month && d.day == n.day;
@@ -120,6 +184,39 @@ class _HopMakeAppointmentPageState extends State<HopMakeAppointmentPage> {
     return (isStart ? _startTime : _endTime) ?? TimeOfDay.now();
   }
 
+
+  /* ------------------- COMBINED LOGIC: DATE/TIME PICKERS ------------------ */
+
+  // Uses OLD UI logic for initial time calculation
+  Future<void> _pickDate() async {
+    final now = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _date ?? now,
+      firstDate: DateTime(now.year, now.month, now.day),
+      lastDate: now.add(const Duration(days: 365)),
+    );
+    if (picked != null) {
+      setState(() {
+        _date = picked;
+        // The complex time validation logic from old code is retained here
+        if (_isToday(picked)) {
+          final ceil = _ceilToQuarter(DateTime.now());
+          _startTime ??= TimeOfDay(hour: ceil.hour, minute: ceil.minute);
+          if (_endTime != null) {
+            final startDT = _combine(picked, _startTime!);
+            final endDT = _combine(picked, _endTime!);
+            if (!endDT.isAfter(startDT)) {
+              final bumped = startDT.add(const Duration(minutes: 30));
+              _endTime = TimeOfDay(hour: bumped.hour, minute: bumped.minute);
+            }
+          }
+        }
+      });
+    }
+  }
+
+  // Uses OLD UI logic for initial time calculation
   Future<void> _pickTime(bool isStart) async {
     final picked = await showTimePicker(
       context: context,
@@ -144,56 +241,34 @@ class _HopMakeAppointmentPageState extends State<HopMakeAppointmentPage> {
     }
   }
 
-  void _msg(String m) =>
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
 
-  Future<bool> _hasOverlap({
-    required String tutorId,
-    required DateTime startDt,
-    required DateTime endDt,
-  }) async {
-    // Check tutor's other appointments (pending/confirmed)
-    final col = FirebaseFirestore.instance.collection('appointments');
-    final snap = await col.where('helperId', isEqualTo: tutorId).limit(500).get();
+  /* ----------------------- NEW LOGIC: SUBMIT FUNCTION ----------------------- */
 
-    for (final d in snap.docs) {
-      final data = d.data();
-      final status = (data['status'] ?? '').toString().toLowerCase();
-      if (status != 'pending' && status != 'confirmed') continue;
+  // Removed the OLD _hasOverlap check (as it wasn't in the new logic)
+  void _msg(String m, {bool success = false}) =>
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(m),
+        backgroundColor: success ? Colors.green : Colors.red,
+      ));
 
-      final tsStart = data['startAt'];
-      final tsEnd = data['endAt'];
-      if (tsStart is! Timestamp || tsEnd is! Timestamp) continue;
-
-      final existingStart = tsStart.toDate();
-      final existingEnd = tsEnd.toDate();
-      final overlaps = existingStart.isBefore(endDt) && existingEnd.isAfter(startDt);
-      if (overlaps) return true;
-    }
-    return false;
-  }
-
-  Future<void> _book() async {
+  Future<void> _submit() async {
     if (_saving) return;
-
-    // Read args robustly (accept multiple keys just in case)
-    final args = (ModalRoute.of(context)?.settings.arguments as Map?) ?? {};
-    final tutorId = (args['tutorId'] ?? args['helperId'] ?? args['userId'] ?? '').toString();
 
     if (_date == null || _startTime == null || _endTime == null) {
       _msg('Please select date and time.');
       return;
     }
-    if (_sessionType == null) {
-      _msg('Please choose a session type.');
+    // Uses new logic: check against role-based options
+    if (_sessionType == null || !_sessionTypeOptions.contains(_sessionType)) {
+      _msg('Please choose a valid session type.');
       return;
     }
     if (_mode == 'physical' && (_venue == null || _venue!.trim().isEmpty)) {
       _msg('Please select a venue for a physical session.');
       return;
     }
-    if (tutorId.isEmpty) {
-      _msg('Missing tutor information.');
+    if (_helperId.isEmpty) {
+      _msg('Missing helper information.');
       return;
     }
 
@@ -217,53 +292,55 @@ class _HopMakeAppointmentPageState extends State<HopMakeAppointmentPage> {
     try {
       setState(() => _saving = true);
 
-      final conflict = await _hasOverlap(
-        tutorId: tutorId,
-        startDt: startDt,
-        endDt: endDt,
-      );
-      if (conflict) {
-        setState(() => _saving = false);
-        _msg('That time overlaps with another appointment for this tutor.');
-        return;
-      }
-
-      final now = DateTime.now();
-      final location =
-      _mode == 'online' ? 'Online (Google Meet)' : (_venue ?? 'Campus');
+      // No overlap check as it was missing from the new code, but retaining the old structure
+      // final conflict = await _hasOverlap(...) // <- Omitted
 
       final bookerInfo = await _getBookerInfo(); // <-- FETCH HOP INFO
 
+      // Use the cached helper info (resolved in the build method's StreamBuilder)
+      final location =
+      _mode == 'online' ? 'Online (Google Meet)' : (_venue?.trim() ?? 'Campus');
+
       final appt = <String, dynamic>{
-        // Participant ids
-        'helperId': tutorId,      // the tutor
-        'hopId': hopUser.uid,     // the HOP creating the booking
-
-        // NEW: Booker/HOP details for Peer Tutor display (Fix for issue 1)
+        // NEW: Booker/HOP details for Peer Tutor display
         'bookerId': hopUser.uid,
-        'bookerName': bookerInfo['name'], // HOP's full name
-        'bookerRole': bookerInfo['role'], // HOP's role, e.g., Head of Program
+        'bookerName': bookerInfo['name'],
+        'bookerRole': bookerInfo['role'], // 'hop'
+        'bookerFacultyId': bookerInfo['facultyId'],
 
-        // Datetimes
-        'date': Timestamp.fromDate(DateTime(_date!.year, _date!.month, _date!.day)),
-        'startAt': Timestamp.fromDate(startDt),
-        'endAt': Timestamp.fromDate(endDt),
+        // Helper details (cached from StreamBuilder or args)
+        'helperId': _helperId,
+        'helperName': _helperName,
+        'helperRole': _helperRole,
+        'helperFacultyId': _helperFacultyId,
+
+        // Datetimes (using the new schema keys: 'start', 'end')
+        'start': Timestamp.fromDate(startDt),
+        'end': Timestamp.fromDate(endDt),
+
         // Meta
         'sessionType': _sessionType,
         'mode': _mode,
-        'venue': _mode == 'physical' ? _venue : null,
+        // Using the OLD UI field for venue
+        'venue': _mode == 'physical' ? _venue?.trim() : null,
         'location': location,
         'notes': _notesCtrl.text.trim(),
-        'status': 'pending',
+        'status': 'pending', // NEW LOGIC: always pending
         'createdByRole': 'hop',
-        'createdAt': Timestamp.fromDate(now),
-        'updatedAt': Timestamp.fromDate(now),
+        'createdAt': FieldValue.serverTimestamp(),
       };
 
-      await FirebaseFirestore.instance.collection('appointments').add(appt);
+      final col = FirebaseFirestore.instance.collection('appointments');
+
+      if (_appointmentId != null) {
+        await col.doc(_appointmentId!).update(appt);
+      } else {
+        await col.add(appt);
+      }
+
 
       if (!mounted) return;
-      _msg('Booked successfully.');
+      _msg(_appointmentId == null ? 'Booked successfully.' : 'Updated successfully.', success: true);
       setState(() => _saving = false);
 
       Navigator.pushNamedAndRemoveUntil(context, '/hop/home', (_) => false);
@@ -274,20 +351,15 @@ class _HopMakeAppointmentPageState extends State<HopMakeAppointmentPage> {
     }
   }
 
+  /* ---------------------------- COMBINED BUILD METHOD --------------------------- */
+
   @override
   Widget build(BuildContext context) {
     final t = Theme.of(context).textTheme;
 
+    // OLD UI ARG PARSING (for display)
     final args = (ModalRoute.of(context)?.settings.arguments as Map?) ?? {};
-    // Robust argument reads
-    final helperId = (args['tutorId'] ?? args['helperId'] ?? args['userId'] ?? '').toString();
-    final name = (args['tutorName'] ?? args['name'] ?? '—').toString();
-    final specializes = switch (args['specializes']) {
-      List l => l.map((e) => e.toString()).toList(),
-      _ => const <String>[],
-    };
-
-    // Optional match chip support (default to Best Match styles)
+    final helperId = _helperId; // Use the parsed/loaded ID
     final match = (args['match'] as String?) ?? 'Best Match';
     final (chipBg, chipFg) = switch (match.toLowerCase()) {
       'best match' => (const Color(0xFFC9F2D9), const Color(0xFF1B5E20)),
@@ -304,16 +376,18 @@ class _HopMakeAppointmentPageState extends State<HopMakeAppointmentPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const _HopHeader(),
+                  const _HopHeader(), // OLD UI: Header
                   const SizedBox(height: 16),
 
-                  Text('Make an Appointment',
-                      style: t.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
+                  Text(
+                    _appointmentId == null ? 'Make an Appointment' : 'Reschedule Appointment',
+                    style: t.titleLarge?.copyWith(fontWeight: FontWeight.w700),
+                  ),
                   const SizedBox(height: 4),
                   Text('Book with selected user', style: t.bodySmall),
                   const SizedBox(height: 12),
 
-                  // Card
+                  // OLD UI: Helper Card Container
                   Container(
                     decoration: BoxDecoration(
                       color: Colors.white,
@@ -331,19 +405,35 @@ class _HopMakeAppointmentPageState extends State<HopMakeAppointmentPage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        _HelperHeader(
-                          helperId: helperId,
-                          fallbackName: name,
-                          fallbackFaculty: '—',
-                          fallbackEmail: '—',
-                          fallbackSessions: 0,
-                          fallbackPhotoUrl: '',
-                          specializes: specializes,              // <- from Navigator args
-                          trailing: _Chip(label: match, bg: chipBg, fg: chipFg),
+                        // OLD UI: _HelperHeader combined with NEW LOGIC caching
+                        StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                          stream: helperId.isEmpty
+                              ? null
+                              : FirebaseFirestore.instance.collection('users').doc(helperId).snapshots(),
+                          builder: (context, snap) {
+                            if (snap.hasData) {
+                              final d = snap.data?.data() ?? {};
+                              // CACHING FOR SUBMIT
+                              _helperRole = (d['role'] ?? _helperRole).toString();
+                              _helperName = (d['fullName'] ?? d['name'] ?? _fbName).toString();
+                              _helperFacultyId = (d['facultyId'] ?? '').toString();
+                            }
+
+                            return _HelperHeader(
+                              helperId: helperId,
+                              fallbackName: _fbName,
+                              fallbackFaculty: '—',
+                              fallbackEmail: '—',
+                              fallbackSessions: 0,
+                              fallbackPhotoUrl: '',
+                              specializes: _fbSpecializes, // <- from Navigator args/fallbacks
+                              trailing: _Chip(label: match, bg: chipBg, fg: chipFg),
+                            );
+                          },
                         ),
                         const SizedBox(height: 12),
 
-                        // Date
+                        // Date (OLD UI)
                         _FieldShell(
                           child: Row(
                             children: [
@@ -365,7 +455,7 @@ class _HopMakeAppointmentPageState extends State<HopMakeAppointmentPage> {
                         ),
                         const SizedBox(height: 8),
 
-                        // Times
+                        // Times (OLD UI)
                         LayoutBuilder(builder: (context, c) {
                           final tight = c.maxWidth < 360;
 
@@ -433,7 +523,7 @@ class _HopMakeAppointmentPageState extends State<HopMakeAppointmentPage> {
                         }),
                         const SizedBox(height: 8),
 
-                        // Session type (nullable value to avoid dropdown assertion)
+                        // Session type (OLD UI with NEW LOGIC options)
                         Container(
                           height: 44,
                           decoration: BoxDecoration(
@@ -446,30 +536,16 @@ class _HopMakeAppointmentPageState extends State<HopMakeAppointmentPage> {
                             isExpanded: true,
                             underline: const SizedBox(),
                             hint: const Text('Session Type'),
-                            items: const [
-                              DropdownMenuItem(
-                                value: 'Performance Review',
-                                child: Text('Performance Review'),
-                              ),
-                              DropdownMenuItem(
-                                value: 'Workload Planning',
-                                child: Text('Workload Planning'),
-                              ),
-                              DropdownMenuItem(
-                                value: 'Student Issues',
-                                child: Text('Student Issues'),
-                              ),
-                              DropdownMenuItem(
-                                value: 'General Check-in',
-                                child: Text('General Check-in'),
-                              ),
-                            ],
+                            // Dynamically uses the session types based on helper role
+                            items: _sessionTypeOptions.map((type) =>
+                                DropdownMenuItem(value: type, child: Text(type))
+                            ).toList(),
                             onChanged: (v) => setState(() => _sessionType = v),
                           ),
                         ),
                         const SizedBox(height: 8),
 
-                        // Mode
+                        // Mode (OLD UI)
                         Container(
                           height: 44,
                           decoration: BoxDecoration(
@@ -489,14 +565,14 @@ class _HopMakeAppointmentPageState extends State<HopMakeAppointmentPage> {
                               if (v == null) return;
                               setState(() {
                                 _mode = v;
-                                if (_mode == 'online') _venue = null; // keep dropdown sane
+                                if (_mode == 'online') _venue = null;
                               });
                             },
                           ),
                         ),
                         const SizedBox(height: 8),
 
-                        // Venue (only for physical)
+                        // Venue (only for physical, OLD UI)
                         if (_mode == 'physical')
                           Container(
                             height: 44,
@@ -510,8 +586,12 @@ class _HopMakeAppointmentPageState extends State<HopMakeAppointmentPage> {
                               isExpanded: true,
                               underline: const SizedBox(),
                               hint: const Text('Select Venue'),
+                              // Retains the old venue list, including the empty string option
                               items: _venueOptions
-                                  .map((v) => DropdownMenuItem(value: v, child: Text(v)))
+                                  .map((v) => DropdownMenuItem(
+                                  value: v.isEmpty ? ' ' : v, // Use ' ' for empty string value
+                                  child: Text(v.isEmpty ? 'Other (Please specify)' : v))
+                              )
                                   .toList(),
                               onChanged: (v) => setState(() => _venue = v),
                             ),
@@ -519,7 +599,7 @@ class _HopMakeAppointmentPageState extends State<HopMakeAppointmentPage> {
 
                         const SizedBox(height: 12),
 
-                        // Notes
+                        // Notes (OLD UI)
                         Container(
                           height: 150,
                           decoration: BoxDecoration(
@@ -539,6 +619,7 @@ class _HopMakeAppointmentPageState extends State<HopMakeAppointmentPage> {
                         ),
                         const SizedBox(height: 12),
 
+                        // Submit Button (OLD UI with NEW LOGIC text)
                         Align(
                           alignment: Alignment.centerRight,
                           child: ElevatedButton(
@@ -551,8 +632,12 @@ class _HopMakeAppointmentPageState extends State<HopMakeAppointmentPage> {
                               padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 10),
                               elevation: 0,
                             ),
-                            onPressed: _saving ? null : _book,
-                            child: Text(_saving ? 'Booking…' : 'Book'),
+                            onPressed: _saving ? null : _submit,
+                            child: Text(
+                              _saving
+                                  ? 'Booking…'
+                                  : (_appointmentId == null ? 'Book' : 'Save Changes'),
+                            ),
                           ),
                         ),
                       ],
@@ -584,6 +669,7 @@ class _HopHeader extends StatelessWidget {
   Future<void> _logout(BuildContext context) async {
     await FirebaseAuth.instance.signOut();
     if (context.mounted) {
+      // Assuming '/login' is the route for the login page
       Navigator.pushNamedAndRemoveUntil(context, '/login', (_) => false);
     }
   }
@@ -824,16 +910,16 @@ class _HelperHeader extends StatelessWidget {
             );
           }
           return Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              avatar,
-              const SizedBox(width: 10),
-              Expanded(child: info),
-              if (trailing != null) ...[
-                const SizedBox(width: 8),
-                trailing!,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                avatar,
+                const SizedBox(width: 10),
+                Expanded(child: info),
+                if (trailing != null) ...[
+                  const SizedBox(width: 8),
+                  trailing!,
+                ],
               ],
-            ],
           );
         });
       },
