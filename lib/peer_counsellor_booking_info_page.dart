@@ -847,7 +847,7 @@ class _PeerCounsellorBookingInfoBodyState
                                                 _acceptStudentReschedule(
                                                     widget.appointmentId, m),
                                             child: const Text(
-                                                'Accept Reschedule'),
+                                                'Confirm'),
                                           ),
 
                                         // Action: Accept Reschedule (when SC proposed)
@@ -862,7 +862,7 @@ class _PeerCounsellorBookingInfoBodyState
                                                     widget.appointmentId, m),
                                             // Same logic
                                             child: const Text(
-                                                'Accept Reschedule'),
+                                                'Confirm'),
                                           ),
 
                                         // Action: Confirm (initial booking)
@@ -897,7 +897,7 @@ class _PeerCounsellorBookingInfoBodyState
                                                 _cancelWithReason(
                                                     widget.appointmentId,
                                                     start),
-                                            child: const Text('Cancel Booking'),
+                                            child: const Text('Cancel'),
                                           ),
 
                                         // Action: Mark Outcome (after original start time, even if reschedule pending)
@@ -910,7 +910,7 @@ class _PeerCounsellorBookingInfoBodyState
                                                 _markCompleted(
                                                     widget.appointmentId,
                                                     start),
-                                            child: const Text('Session Held'),
+                                            child: const Text('Completed'),
                                           ),
                                           FilledButton(
                                             style: FilledButton.styleFrom(
@@ -920,7 +920,7 @@ class _PeerCounsellorBookingInfoBodyState
                                                 _markMissed(
                                                     widget.appointmentId,
                                                     start),
-                                            child: const Text('Session Missed'),
+                                            child: const Text('Missed'),
                                           ),
                                         ],
                                       ],

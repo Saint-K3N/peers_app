@@ -1,4 +1,6 @@
 // lib/admin_interests_page.dart
+//
+
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -13,11 +15,11 @@ class AdminInterestsPage extends StatefulWidget {
 /* ------------------------------- Model ------------------------------- */
 
 class InterestItem {
-  String id;       // Firestore doc id
+  String id;
   String title;
-  String code;     // ACI-1 / CT-1
-  int seq;         // numeric counter (1,2,3…)
-  String category; // 'academic' | 'counseling'
+  String code;
+  int seq;
+  String category;
   InterestItem({
     required this.id,
     required this.title,
@@ -41,14 +43,11 @@ class InterestItem {
 /* ------------------------------ Page State ------------------------------ */
 
 class _AdminInterestsPageState extends State<AdminInterestsPage> {
-  // 0 = Academic, 1 = Counseling
   int _tabIndex = 0;
 
-  // Search & filter (filter kept for future expansion)
   String _search = '';
   String _filter = 'Show all';
 
-  // Add form
   final _formKey = GlobalKey<FormState>();
   final _newCtrl = TextEditingController();
 
@@ -70,16 +69,13 @@ class _AdminInterestsPageState extends State<AdminInterestsPage> {
 
   /* ------------------------------ Firestore ------------------------------ */
 
-  /// Stream of interests by category (no orderBy – we sort locally by seq desc)
   Stream<List<InterestItem>> _categoryStream(String category) {
     final q = FirebaseFirestore.instance
         .collection('interests')
         .where('category', isEqualTo: category);
     return q.snapshots().map((snap) {
       final items = snap.docs.map((d) => InterestItem.fromDoc(d)).toList();
-      // Sort in memory (no composite index required)
       items.sort((a, b) => b.seq.compareTo(a.seq));
-      // Apply search/filter in memory
       final s = _search.trim().toLowerCase();
       return items.where((e) {
         final matchesSearch = s.isEmpty ||
@@ -91,7 +87,6 @@ class _AdminInterestsPageState extends State<AdminInterestsPage> {
     });
   }
 
-  /// Atomically increments and returns the next integer (seq) for a category.
   Future<int> _nextSeq(String category) async {
     final countersRef =
     FirebaseFirestore.instance.collection('meta').doc('counters');
@@ -117,7 +112,7 @@ class _AdminInterestsPageState extends State<AdminInterestsPage> {
         'title': title,
         'code': code,
         'seq': seq,
-        'category': _category, // academic | counseling
+        'category': _category,
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
       });
@@ -180,14 +175,29 @@ class _AdminInterestsPageState extends State<AdminInterestsPage> {
   }
 
   Future<void> _deleteItem(InterestItem item) async {
+    // ✅ ENHANCED: More explicit double confirmation with warnings
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('Delete'),
-        content: Text('Delete “${item.title}”?'),
+        title: const Text('⚠️ Delete Interest/Topic'),
+        content: Text(
+          'Are you sure you want to PERMANENTLY DELETE "${item.title}" (${item.code})?\n\n'
+              '⚠️ This action will:\n'
+              '• Remove this interest/topic from the system\n'
+              '• Affect all users and applications linked to it\n'
+              '• CANNOT be undone\n\n'
+              'Please confirm you want to proceed.',
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Delete')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Yes, Delete Permanently'),
+          ),
         ],
       ),
     );
@@ -197,6 +207,10 @@ class _AdminInterestsPageState extends State<AdminInterestsPage> {
             .collection('interests')
             .doc(item.id)
             .delete();
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Interest/Topic deleted.')),
+        );
       } on FirebaseException catch (e) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
@@ -243,7 +257,6 @@ class _AdminInterestsPageState extends State<AdminInterestsPage> {
                 ),
                 const SizedBox(height: 12),
 
-                // Title + Add button
                 Row(
                   children: [
                     Expanded(
@@ -272,21 +285,18 @@ class _AdminInterestsPageState extends State<AdminInterestsPage> {
                 ),
                 const SizedBox(height: 12),
 
-                // Segmented "tabs"
                 _TabSwitcher(
                   index: _tabIndex,
                   onChanged: (i) => setState(() => _tabIndex = i),
                 ),
                 const SizedBox(height: 12),
 
-                // Search + filter
                 _SearchField(
                   hint: _tabIndex == 0 ? 'Search Academic Interests' : 'Search Counseling Topics',
                   onChanged: (v) => setState(() => _search = v.trim().toLowerCase()),
                 ),
                 const SizedBox(height: 10),
 
-                // Filter + total (total is live from a small listener)
                 Row(
                   children: [
                     Expanded(
@@ -305,7 +315,6 @@ class _AdminInterestsPageState extends State<AdminInterestsPage> {
                 _SectionLabel(text: '$_sectionTitle'),
                 const SizedBox(height: 10),
 
-                // Add New form card
                 _AddCard(
                   formKey: _formKey,
                   controller: _newCtrl,
@@ -315,7 +324,6 @@ class _AdminInterestsPageState extends State<AdminInterestsPage> {
                 Center(child: Icon(Icons.arrow_downward, color: Colors.grey.shade600)),
                 const SizedBox(height: 10),
 
-                // Live list
                 StreamBuilder<List<InterestItem>>(
                   stream: _categoryStream(_category),
                   builder: (context, snap) {
@@ -553,7 +561,7 @@ class _StatBox extends StatelessWidget {
 }
 
 class _CategoryTotalBox extends StatelessWidget {
-  final String category; // academic | counseling
+  final String category;
   final String label;
   const _CategoryTotalBox({required this.category, required this.label});
 

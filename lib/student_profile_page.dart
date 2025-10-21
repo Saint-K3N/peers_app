@@ -1188,6 +1188,8 @@ class _PersonMini {
   });
 }
 
+/* _PeopleCard with Report Button */
+
 class _PeopleCard extends StatelessWidget {
   final String title;
   final List<_PersonMini> people;
@@ -1201,6 +1203,93 @@ class _PeopleCard extends StatelessWidget {
     required this.emptyText,
   });
 
+  // ✅ NEW: Report functionality added
+  Future<void> _reportPerson(BuildContext context, _PersonMini person) async {
+    final currentUser = FirebaseAuth.instance.currentUser;
+    if (currentUser == null) return;
+
+    final reasonCtrl = TextEditingController();
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text('Report ${person.name}'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Please provide a reason for reporting this ${person.role == "peer_tutor" ? "tutor" : "counsellor"}:'),
+            const SizedBox(height: 12),
+            TextField(
+              controller: reasonCtrl,
+              maxLines: 3,
+              maxLength: 100,
+              decoration: const InputDecoration(
+                hintText: 'Enter reason (max 100 characters)',
+                border: OutlineInputBorder(),
+                counterText: '',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () {
+              final reason = reasonCtrl.text.trim();
+              if (reason.isEmpty || reason.length > 100) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Please enter a valid reason (1-100 characters)')),
+                );
+                return;
+              }
+              Navigator.pop(context, true);
+            },
+            child: const Text('Submit Report'),
+          ),
+        ],
+      ),
+    );
+
+    if (result == true && context.mounted) {
+      try {
+        await FirebaseFirestore.instance.collection('reports').add({
+          'reportedUserId': person.helperId,
+          'reportedByUserId': currentUser.uid,
+          'reportedByRole': 'student',
+          'reportedUserRole': person.role,
+          'reportedUserName': person.name,
+          'reportedByName': currentUser.displayName ?? 'Student',
+          'reason': reasonCtrl.text.trim(),
+          'status': 'pending',
+          'createdAt': FieldValue.serverTimestamp(),
+          'reviewedAt': null,
+          'reviewedBy': null,
+          'actionTaken': 'none',
+        });
+
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Report submitted successfully. Admin will review it.'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      } catch (e) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to submit report: $e')),
+          );
+        }
+      }
+    }
+    reasonCtrl.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final t = Theme.of(context).textTheme;
@@ -1213,45 +1302,95 @@ class _PeopleCard extends StatelessWidget {
           if (people.isEmpty)
             Text(emptyText, style: t.bodySmall)
           else
+          // ✅ UNCHANGED: Original Wrap layout preserved
             Wrap(
               spacing: 12,
               runSpacing: 12,
               children: people.map((p) {
-                return InkWell(
-                  onTap: () => onTap(p),
-                  borderRadius: BorderRadius.circular(12),
-                  child: Ink(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFF8FAFF),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: const Color(0xFFE3EAFD)),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        CircleAvatar(
-                          radius: 18,
-                          backgroundColor: Colors.grey.shade300,
-                          backgroundImage: (p.photoUrl != null && p.photoUrl!.isNotEmpty)
-                              ? NetworkImage(p.photoUrl!)
-                              : null,
-                          child: (p.photoUrl == null || p.photoUrl!.isEmpty)
-                              ? const Icon(Icons.person, color: Colors.white)
-                              : null,
-                        ),
-                        const SizedBox(width: 8),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(p.name,
-                                style: t.labelLarge?.copyWith(fontWeight: FontWeight.w700)),
-                            Text('${p.sessionsWithMe} completed',
-                                style: t.bodySmall?.copyWith(color: Colors.black54)),
-                          ],
-                        ),
-                      ],
-                    ),
+                return Container(
+                  width: double.infinity, // Make it full width for the buttons
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF8FAFF),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFE3EAFD)),
+                  ),
+                  child: Column(
+                    children: [
+                      // ✅ UNCHANGED: Original row with avatar and info
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          CircleAvatar(
+                            radius: 18,
+                            backgroundColor: Colors.grey.shade300,
+                            backgroundImage: (p.photoUrl != null && p.photoUrl!.isNotEmpty)
+                                ? NetworkImage(p.photoUrl!)
+                                : null,
+                            child: (p.photoUrl == null || p.photoUrl!.isEmpty)
+                                ? const Icon(Icons.person, color: Colors.white)
+                                : null,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(p.name,
+                                    style: t.labelLarge?.copyWith(fontWeight: FontWeight.w700)),
+                                Text('${p.sessionsWithMe} completed',
+                                    style: t.bodySmall?.copyWith(color: Colors.black54)),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      // ✅ NEW: Action buttons row
+                      Row(
+                        children: [
+                          Expanded(
+                            child: SizedBox(
+                              height: 32,
+                              child: OutlinedButton(
+                                onPressed: () => onTap(p),
+                                style: OutlinedButton.styleFrom(
+                                  side: const BorderSide(color: Color(0xFF7C4DFF)),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                ),
+                                child: const Text('Book Again',
+                                    style: TextStyle(
+                                        color: Color(0xFF7C4DFF),
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 12)),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: SizedBox(
+                              height: 32,
+                              child: OutlinedButton(
+                                onPressed: () => _reportPerson(context, p),
+                                style: OutlinedButton.styleFrom(
+                                  side: const BorderSide(color: Colors.red),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                ),
+                                child: const Text('Report',
+                                    style: TextStyle(
+                                        color: Colors.red,
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 12)),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                   ),
                 );
               }).toList(),

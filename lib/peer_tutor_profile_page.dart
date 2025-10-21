@@ -940,11 +940,11 @@ class _StudentsYouWorkedWith extends StatelessWidget {
   const _StudentsYouWorkedWith({required this.helperId});
 
   Future<List<_StudentMini>> _loadStudents() async {
-    // CRITICAL FIX: Only fetch COMPLETED appointments
+    // ✅ UNCHANGED: Only fetch COMPLETED appointments
     final appts = await FirebaseFirestore.instance
         .collection('appointments')
         .where('helperId', isEqualTo: helperId)
-        .where('status', isEqualTo: 'completed')  // ✅ ADDED: Only completed sessions
+        .where('status', isEqualTo: 'completed')
         .get();
 
     final byStudent =
@@ -998,7 +998,7 @@ class _StudentsYouWorkedWith extends StatelessWidget {
         }
       }
 
-      // Count of completed sessions (all in apptsWithStudent are already completed)
+      // Count of completed sessions
       final completedCount = apptsWithStudent.length;
 
       students.add(_StudentMini(
@@ -1015,12 +1015,99 @@ class _StudentsYouWorkedWith extends StatelessWidget {
   }
 
   void _openStudentDetail(BuildContext context, _StudentMini s) {
-    // ✅ REDIRECT: Navigate to the specific student's detail page
+    // ✅ UNCHANGED: Navigate to the specific student's detail page
     Navigator.pushNamed(
       context,
-      '/tutor/students/detail',  // ✅ FIXED: Correct route
+      '/tutor/students/detail',
       arguments: {'studentId': s.studentId},
     );
+  }
+
+  // ✅ NEW: Report functionality added
+  Future<void> _reportStudent(BuildContext context, _StudentMini student) async {
+    final currentUser = FirebaseAuth.instance.currentUser;
+    if (currentUser == null) return;
+
+    final reasonCtrl = TextEditingController();
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text('Report ${student.name}'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Please provide a reason for reporting this student:'),
+            const SizedBox(height: 12),
+            TextField(
+              controller: reasonCtrl,
+              maxLines: 3,
+              maxLength: 100,
+              decoration: const InputDecoration(
+                hintText: 'Enter reason (max 100 characters)',
+                border: OutlineInputBorder(),
+                counterText: '',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () {
+              final reason = reasonCtrl.text.trim();
+              if (reason.isEmpty || reason.length > 100) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Please enter a valid reason (1-100 characters)')),
+                );
+                return;
+              }
+              Navigator.pop(context, true);
+            },
+            child: const Text('Submit Report'),
+          ),
+        ],
+      ),
+    );
+
+    if (result == true && context.mounted) {
+      try {
+        await FirebaseFirestore.instance.collection('reports').add({
+          'reportedUserId': student.studentId,
+          'reportedByUserId': currentUser.uid,
+          'reportedByRole': 'peer_tutor',
+          'reportedUserRole': 'student',
+          'reportedUserName': student.name,
+          'reportedByName': currentUser.displayName ?? 'Peer Tutor',
+          'reason': reasonCtrl.text.trim(),
+          'status': 'pending',
+          'createdAt': FieldValue.serverTimestamp(),
+          'reviewedAt': null,
+          'reviewedBy': null,
+          'actionTaken': 'none',
+        });
+
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Report submitted successfully. Admin will review it.'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      } catch (e) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to submit report: $e')),
+          );
+        }
+      }
+    }
+    reasonCtrl.dispose();
   }
 
   @override
@@ -1041,26 +1128,23 @@ class _StudentsYouWorkedWith extends StatelessWidget {
               if (students.isEmpty)
                 Text('No students yet (only completed sessions count).', style: t.bodySmall)
               else
-                Wrap(
-                  spacing: 12,
-                  runSpacing: 12,
+                Column(
                   children: students.map((s) {
-                    return InkWell(
-                      onTap: () => _openStudentDetail(context, s),  // ✅ Tap redirects to detail page
-                      borderRadius: BorderRadius.circular(12),
-                      child: Ink(
-                        padding:
-                        const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(10),
                         decoration: BoxDecoration(
                           color: const Color(0xFFF8FAFF),
                           borderRadius: BorderRadius.circular(12),
                           border: Border.all(color: const Color(0xFFE3EAFD)),
                         ),
                         child: Row(
-                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             CircleAvatar(
-                              radius: 18,
+                              radius: 22,
                               backgroundColor: Colors.grey.shade300,
                               backgroundImage:
                               (s.photoUrl != null && s.photoUrl!.isNotEmpty)
@@ -1070,17 +1154,61 @@ class _StudentsYouWorkedWith extends StatelessWidget {
                                   ? const Icon(Icons.person, color: Colors.white)
                                   : null,
                             ),
-                            const SizedBox(width: 8),
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(s.name,
-                                    style: t.labelLarge
-                                        ?.copyWith(fontWeight: FontWeight.w700)),
-                                Text('${s.sessionsWithMe} completed',
-                                    style: t.bodySmall
-                                        ?.copyWith(color: Colors.black54)),
-                              ],
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(s.name,
+                                      style: t.titleMedium
+                                          ?.copyWith(fontWeight: FontWeight.w700)),
+                                  const SizedBox(height: 4),
+                                  Text('${s.sessionsWithMe} completed session${s.sessionsWithMe != 1 ? "s" : ""}',
+                                      style: t.bodySmall
+                                          ?.copyWith(color: Colors.black54)),
+                                  const SizedBox(height: 8),
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        child: SizedBox(
+                                          height: 32,
+                                          child: OutlinedButton(
+                                            onPressed: () => _openStudentDetail(context, s),
+                                            style: OutlinedButton.styleFrom(
+                                              side: const BorderSide(
+                                                  color: Color(0xFF7C4DFF)),
+                                              shape: RoundedRectangleBorder(
+                                                borderRadius: BorderRadius.circular(8),
+                                              ),
+                                            ),
+                                            child: const Text('View Details',
+                                                style: TextStyle(
+                                                    color: Color(0xFF7C4DFF),
+                                                    fontWeight: FontWeight.w600)),
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      SizedBox(
+                                        height: 32,
+                                        child: OutlinedButton(
+                                          onPressed: () => _reportStudent(context, s),
+                                          style: OutlinedButton.styleFrom(
+                                            side: const BorderSide(color: Colors.red),
+                                            shape: RoundedRectangleBorder(
+                                              borderRadius: BorderRadius.circular(8),
+                                            ),
+                                          ),
+                                          child: const Text('Report',
+                                              style: TextStyle(
+                                                  color: Colors.red,
+                                                  fontWeight: FontWeight.w600)),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
                             ),
                           ],
                         ),

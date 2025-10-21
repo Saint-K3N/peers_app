@@ -1,4 +1,6 @@
 // lib/admin_user_management_page.dart
+//
+
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -8,7 +10,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 enum UserRole {
   student,
   peerTutor,
-  hop, // Head of Programme
+  hop,
   peerCounsellor,
   schoolCounsellor,
   admin,
@@ -16,13 +18,13 @@ enum UserRole {
 
 class AppUser {
   String name;
-  String id;           // studentId
+  String id;
   String email;
-  String facultyId;    // from users.facultyId
-  String facultyName;  // resolved via faculties/{id}.name
+  String facultyId;
+  String facultyName;
   UserRole role;
-  String? uid;         // users/{uid}
-  String? status;      // active/inactive
+  String? uid;
+  String? status;
 
   AppUser({
     required this.name,
@@ -141,7 +143,6 @@ class _AdminUserManagementPageState extends State<AdminUserManagementPage> {
 
   Future<void> _updateUserRoleByEmail(
       String email, String newRoleLabel) async {
-    // Only allow HOP or School Counsellor to be assigned from this screen
     if (newRoleLabel != 'HOP' && newRoleLabel != 'School Counsellor') return;
 
     final newRoleStored = _storeRole(_labelToRole(newRoleLabel));
@@ -163,8 +164,36 @@ class _AdminUserManagementPageState extends State<AdminUserManagementPage> {
     }
   }
 
-  /// Toggleable status helper
-  Future<void> _setUserStatusByEmail(String email, String status) async {
+  /// ✅ ENHANCED: Toggleable status helper with double confirmation
+  Future<void> _setUserStatusByEmail(String email, String status, String userName) async {
+    // ✅ NEW: Double confirmation dialog
+    final action = status == 'active' ? 'activate' : 'deactivate';
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text('${action == 'activate' ? 'Activate' : 'Deactivate'} User Account'),
+        content: Text(
+          'Are you sure you want to $action the account for $userName?\n\n'
+              '${status == 'inactive' ? '⚠️ They will lose access to their account and must contact admin to regain access.' : '✅ They will regain full access to their account.'}',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: status == 'inactive' ? Colors.red : Colors.green,
+            ),
+            onPressed: () => Navigator.pop(context, true),
+            child: Text('Confirm ${action == 'activate' ? 'Activate' : 'Deactivate'}'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true) return;
+
     final qs = await FirebaseFirestore.instance
         .collection('users')
         .where('email', isEqualTo: _normEmail(email))
@@ -241,7 +270,6 @@ class _AdminUserManagementPageState extends State<AdminUserManagementPage> {
               ),
               const SizedBox(height: 10),
 
-              // Load faculties once; drive filter + user list with it
               StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                 stream: FirebaseFirestore.instance
                     .collection('faculties')
@@ -285,7 +313,6 @@ class _AdminUserManagementPageState extends State<AdminUserManagementPage> {
                       ),
                       const SizedBox(height: 12),
 
-                      // Stats (fixed parsing of counsellor roles)
                       _LiveStatsRow(roleLabel: (r) => _roleToLabel(r)),
 
                       const SizedBox(height: 16),
@@ -297,7 +324,7 @@ class _AdminUserManagementPageState extends State<AdminUserManagementPage> {
                         roleFilter: _selectedRoleFilter,
                         facFilter: _selectedFacultyFilter,
                         onRoleChange: _updateUserRoleByEmail,
-                        onToggleStatus: _setUserStatusByEmail, // <--- pass toggle
+                        onToggleStatus: _setUserStatusByEmail, // ✅ Updated signature
                         readRole: _readRole,
                         facultyIdToName: facultyIdToName,
                       ),
@@ -328,7 +355,6 @@ class _HeaderBar extends StatelessWidget {
         _IconSquare(onTap: onBack, icon: Icons.arrow_back),
         const SizedBox(width: 10),
 
-        // PEERS logo square
         Container(
           height: 44,
           width: 44,
@@ -351,7 +377,6 @@ class _HeaderBar extends StatelessWidget {
         ),
         const SizedBox(width: 8),
 
-        // Admin Portal label
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -470,7 +495,7 @@ class _SectionLabel extends StatelessWidget {
 class _UsersFromFirestoreList extends StatelessWidget {
   final String search, roleFilter, facFilter;
   final Future<void> Function(String email, String newRoleLabel) onRoleChange;
-  final Future<void> Function(String email, String status) onToggleStatus; // <--- NEW
+  final Future<void> Function(String email, String status, String userName) onToggleStatus; // ✅ Updated
   final UserRole Function(String? s) readRole;
   final Map<String, String> facultyIdToName;
 
@@ -544,7 +569,7 @@ class _UsersFromFirestoreList extends StatelessWidget {
                   if (label == null) return;
                   await onRoleChange(u.email, label);
                 },
-                onToggleStatus: onToggleStatus, // pass through
+                onToggleStatus: onToggleStatus,
               ),
               const SizedBox(height: 14),
             ],
@@ -665,7 +690,7 @@ class _StatBox extends StatelessWidget {
 class _UserItemCard extends StatelessWidget {
   final AppUser user;
   final ValueChanged<String?> onRoleChanged;
-  final Future<void> Function(String email, String status) onToggleStatus;
+  final Future<void> Function(String email, String status, String userName) onToggleStatus; // ✅ Updated
 
   const _UserItemCard({
     required this.user,
@@ -677,12 +702,12 @@ class _UserItemCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = Theme.of(context).textTheme;
 
-    // Only allow HOP and School Counsellor assignments
     final allowedRoles = const ['HOP', 'School Counsellor','Student'];
     final currentLabel = _UsersFromFirestoreList._roleToLabelStatic(user.role);
     final dropdownValue = allowedRoles.contains(currentLabel) ? currentLabel : null;
 
     final isActive = (user.status ?? 'active') == 'active';
+    final isAdmin = user.role == UserRole.admin; // ✅ NEW: Check if user is admin
 
     return Container(
       padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
@@ -701,7 +726,7 @@ class _UserItemCard extends StatelessWidget {
           const SizedBox(height: 4),
           Text('ID: ${user.id}', style: t.bodySmall),
           Text(user.email, style: t.bodySmall),
-          Text(user.facultyName, style: t.bodySmall), // resolved faculty name
+          Text(user.facultyName, style: t.bodySmall),
           const SizedBox(height: 4),
 
           Row(
@@ -716,43 +741,73 @@ class _UserItemCard extends StatelessWidget {
           ),
           const SizedBox(height: 8),
 
-          Row(
-            children: [
-              // Restricted role dropdown
-              Container(
-                height: 36,
-                padding: const EdgeInsets.symmetric(horizontal: 10),
-                decoration: BoxDecoration(
-                  border: Border.all(color: Colors.black26),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: DropdownButton<String>(
-                  value: dropdownValue,
-                  underline: const SizedBox(),
-                  hint: const Text("Set Role"),
-                  items: allowedRoles
-                      .map((e) => DropdownMenuItem<String>(value: e, child: Text(e)))
-                      .toList(),
-                  onChanged: onRoleChanged,
-                ),
-              ),
-              const Spacer(),
-
-              // Toggle Activate/Deactivate
-              SizedBox(
-                height: 36,
-                child: FilledButton(
-                  style: FilledButton.styleFrom(
-                    backgroundColor: isActive ? Colors.red : Colors.green,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          // ✅ NEW: Hide controls for Admin users
+          if (!isAdmin) ...[
+            Row(
+              children: [
+                Container(
+                  height: 36,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: Colors.black26),
+                    borderRadius: BorderRadius.circular(8),
                   ),
-                  onPressed: () => onToggleStatus(user.email, isActive ? 'inactive' : 'active'),
-                  child: Text(isActive ? 'Deactivate' : 'Activate',
-                      style: const TextStyle(color: Colors.white)),
+                  child: DropdownButton<String>(
+                    value: dropdownValue,
+                    underline: const SizedBox(),
+                    hint: const Text("Set Role"),
+                    items: allowedRoles
+                        .map((e) => DropdownMenuItem<String>(value: e, child: Text(e)))
+                        .toList(),
+                    onChanged: onRoleChanged,
+                  ),
                 ),
+                const Spacer(),
+
+                SizedBox(
+                  height: 36,
+                  child: FilledButton(
+                    style: FilledButton.styleFrom(
+                      backgroundColor: isActive ? Colors.red : Colors.green,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                    onPressed: () => onToggleStatus(
+                      user.email,
+                      isActive ? 'inactive' : 'active',
+                      user.name,
+                    ),
+                    child: Text(isActive ? 'Deactivate' : 'Activate',
+                        style: const TextStyle(color: Colors.white)),
+                  ),
+                ),
+              ],
+            ),
+          ] else ...[
+            // ✅ NEW: Show message for Admin users
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: Colors.orange.shade50,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.orange.shade200),
               ),
-            ],
-          ),
+              child: Row(
+                children: [
+                  Icon(Icons.info_outline, size: 18, color: Colors.orange.shade700),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Admin accounts cannot be modified from this page',
+                      style: t.bodySmall?.copyWith(
+                        color: Colors.orange.shade900,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ],
       ),
     );

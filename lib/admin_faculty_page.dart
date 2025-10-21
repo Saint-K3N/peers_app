@@ -1,3 +1,6 @@
+// lib/admin_faculty_page.dart
+//
+
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -5,10 +8,10 @@ import 'package:firebase_auth/firebase_auth.dart';
 /* -------------------------------- Model -------------------------------- */
 
 class FacultyItem {
-  final String id;           // Firestore doc id
+  final String id;
   String name;
-  String approverUid;        // <-- HOP user's uid (from users/{uid})
-  String description;        // optional notes
+  String approverUid;
+  String description;
 
   FacultyItem({
     required this.id,
@@ -22,14 +25,14 @@ class FacultyItem {
     return FacultyItem(
       id: d.id,
       name: (data['name'] ?? '').toString(),
-      approverUid: (data['approverUid'] ?? '').toString(), // <-- read uid
+      approverUid: (data['approverUid'] ?? '').toString(),
       description: (data['description'] ?? '').toString(),
     );
   }
 
   Map<String, dynamic> toMap() => {
     'name': name,
-    'approverUid': approverUid, // <-- persist uid
+    'approverUid': approverUid,
     'description': description,
     'nameLower': name.trim().toLowerCase(),
     'updatedAt': FieldValue.serverTimestamp(),
@@ -46,15 +49,13 @@ class AdminFacultyPage extends StatefulWidget {
 }
 
 class _AdminFacultyPageState extends State<AdminFacultyPage> {
-  // Search
   String _search = '';
   String _filter = 'All Faculties';
 
-  // Add form
   final _formKey = GlobalKey<FormState>();
   final _nameCtrl = TextEditingController();
   final _descCtrl = TextEditingController();
-  String? _selectedHopUid; // <-- selected HOP uid for Add
+  String? _selectedHopUid;
 
   CollectionReference<Map<String, dynamic>> get _facultiesCol =>
       FirebaseFirestore.instance.collection('faculties');
@@ -115,7 +116,6 @@ class _AdminFacultyPageState extends State<AdminFacultyPage> {
     if (name.isNotEmpty) return name;
     final email = (u?['email'] ?? u?['emailAddress'] ?? '').toString();
     if (email.isNotEmpty) return email;
-    // short uid fallback
     return uid.length > 8 ? '${uid.substring(0, 8)}…' : uid;
   }
 
@@ -137,7 +137,7 @@ class _AdminFacultyPageState extends State<AdminFacultyPage> {
       await _facultiesCol.add({
         'name': name,
         'description': desc,
-        'approverUid': approverUid, // <-- store HOP uid
+        'approverUid': approverUid,
         'nameLower': name.toLowerCase(),
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
@@ -215,14 +215,29 @@ class _AdminFacultyPageState extends State<AdminFacultyPage> {
   }
 
   Future<void> _deleteFaculty(FacultyItem f) async {
+    // ✅ ENHANCED: More explicit double confirmation with warnings
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('Delete Faculty'),
-        content: Text('Delete “${f.name}”?'),
+        title: const Text('⚠️ Delete Faculty'),
+        content: Text(
+          'Are you sure you want to PERMANENTLY DELETE "${f.name}"?\n\n'
+              '⚠️ This action will:\n'
+              '• Remove the faculty from the system\n'
+              '• Affect all users associated with this faculty\n'
+              '• CANNOT be undone\n\n'
+              'Please confirm you want to proceed.',
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Delete')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Yes, Delete Permanently'),
+          ),
         ],
       ),
     );
@@ -256,7 +271,6 @@ class _AdminFacultyPageState extends State<AdminFacultyPage> {
   Widget build(BuildContext context) {
     final t = Theme.of(context).textTheme;
 
-    // Query with prefix search on nameLower.
     Query<Map<String, dynamic>> query = _facultiesCol.orderBy('nameLower');
     final q = _search.trim().toLowerCase();
     if (q.isNotEmpty) {
@@ -286,7 +300,6 @@ class _AdminFacultyPageState extends State<AdminFacultyPage> {
                 ),
                 const SizedBox(height: 12),
 
-                // Title + Add button
                 Row(
                   children: [
                     Column(
@@ -312,7 +325,6 @@ class _AdminFacultyPageState extends State<AdminFacultyPage> {
                 ),
                 const SizedBox(height: 12),
 
-                // Search + (light) filter
                 _SearchField(
                   hint: 'Search faculty',
                   onChanged: (v) => setState(() => _search = v.trim().toLowerCase()),
@@ -326,7 +338,6 @@ class _AdminFacultyPageState extends State<AdminFacultyPage> {
 
                 const SizedBox(height: 14),
 
-                // Live list
                 StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                   stream: query.snapshots(),
                   builder: (context, snap) {
@@ -345,7 +356,6 @@ class _AdminFacultyPageState extends State<AdminFacultyPage> {
 
                     final items = (snap.data?.docs ?? []).map((d) => FacultyItem.fromDoc(d)).toList();
 
-                    // Secondary description filter (optional)
                     final s = _search.trim().toLowerCase();
                     final filtered = items.where((f) {
                       if (s.isEmpty) return true;
@@ -358,7 +368,6 @@ class _AdminFacultyPageState extends State<AdminFacultyPage> {
                         _SectionLabel(text: 'Faculty (${filtered.length})'),
                         const SizedBox(height: 10),
 
-                        // Add New Faculty card
                         _AddFacultyCard(
                           formKey: _formKey,
                           nameCtrl: _nameCtrl,
@@ -373,7 +382,6 @@ class _AdminFacultyPageState extends State<AdminFacultyPage> {
                         Center(child: Icon(Icons.arrow_downward, color: Colors.grey.shade600)),
                         const SizedBox(height: 10),
 
-                        // Cards
                         for (final f in filtered) ...[
                           _FacultyTile(
                             item: f,
@@ -538,7 +546,7 @@ class _AddFacultyCard extends StatelessWidget {
   final GlobalKey<FormState> formKey;
   final TextEditingController nameCtrl;
   final TextEditingController descCtrl;
-  final Widget approverInput; // UID dropdown
+  final Widget approverInput;
 
   const _AddFacultyCard({
     required this.formKey,
@@ -576,7 +584,7 @@ class _AddFacultyCard extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 8),
-            approverInput, // HOP dropdown
+            approverInput,
             const SizedBox(height: 8),
             TextFormField(
               controller: descCtrl,
@@ -639,7 +647,6 @@ class _FacultyTile extends StatelessWidget {
               Text(item.name, style: t.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
               const SizedBox(height: 4),
 
-              // Resolve HOP name from approverUid
               FutureBuilder<Map<String, dynamic>?>(
                 future: getUser(item.approverUid),
                 builder: (context, snap) {
@@ -684,7 +691,7 @@ class _FacultyTile extends StatelessWidget {
 /* --------------------- HOP user dropdown (role == hop) --------------------- */
 
 class _HopUserDropdown extends StatelessWidget {
-  final String? value;                      // selected uid
+  final String? value;
   final ValueChanged<String?> onChanged;
 
   const _HopUserDropdown({
@@ -731,7 +738,6 @@ class _HopUserDropdown extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      // Only users with role == 'hop'
       stream: _usersCol.where('role', isEqualTo: 'hop').snapshots(),
       builder: (context, snap) {
         if (snap.connectionState == ConnectionState.waiting) {
@@ -758,7 +764,6 @@ class _HopUserDropdown extends StatelessWidget {
         }
 
         final docs = snap.data?.docs ?? const [];
-        // Build items
         final items = <DropdownMenuItem<String>>[];
         for (final d in docs) {
           final uid = d.id;
@@ -770,7 +775,6 @@ class _HopUserDropdown extends StatelessWidget {
           ));
         }
 
-        // If the current value isn't in the list (e.g., role changed), add a temp item
         String? usedValue = value;
         final uidSet = docs.map((e) => e.id).toSet();
         if (usedValue != null && usedValue.isNotEmpty && !uidSet.contains(usedValue)) {

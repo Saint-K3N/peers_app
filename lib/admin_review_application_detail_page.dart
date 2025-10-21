@@ -1,9 +1,6 @@
 // lib/admin_review_application_detail_page.dart
 //
-// Streams peer_applications/{appId}, fetches users/{userId}, resolves interests
-// from interests/{interestId}, opens letter link in a browser (with clipboard
-// fallback), and lets Admin approve/reject/delete.
-// Approve also updates users/{userId}.role to requestedRole.
+
 
 import 'dart:async';
 
@@ -53,12 +50,10 @@ class _AdminReviewApplicationDetailPageState
     }
   }
 
-  /// Resolve interest titles from a list of interest IDs, preserving input order.
   Future<List<String>> _getInterestTitlesByIds(List<dynamic>? ids) async {
     if (ids == null || ids.isEmpty) return const <String>[];
     final idStrs = ids.map((e) => e.toString()).toList();
 
-    // whereIn supports up to 10 items per query; chunk if needed.
     final chunks = <List<String>>[];
     for (var i = 0; i < idStrs.length; i += 10) {
       chunks.add(idStrs.sublist(i, (i + 10 > idStrs.length) ? idStrs.length : i + 10));
@@ -75,7 +70,6 @@ class _AdminReviewApplicationDetailPageState
       }
     }
 
-    // Preserve original input order.
     final titles = <String>[];
     for (final id in idStrs) {
       final t = idToTitle[id];
@@ -133,7 +127,6 @@ class _AdminReviewApplicationDetailPageState
     return fromApp;
   }
 
-  // Include HOP statuses, otherwise pending
   String _statusText(String s) {
     switch (s.toLowerCase()) {
       case 'approved':
@@ -149,7 +142,6 @@ class _AdminReviewApplicationDetailPageState
     }
   }
 
-  // Colors for major statuses (HOP included)
   (Color border, Color badgeBg, Color badgeFg) _statusColors(String s) {
     switch (s.toLowerCase()) {
       case 'approved':
@@ -164,7 +156,6 @@ class _AdminReviewApplicationDetailPageState
     }
   }
 
-  /// Open file URL with multiple fallbacks; copy to clipboard if all fail.
   Future<void> _openFileUrl(String? url) async {
     if (url == null || url.isEmpty) return;
     final uri = Uri.parse(url);
@@ -180,7 +171,6 @@ class _AdminReviewApplicationDetailPageState
           opened = await launchUrl(uri, mode: LaunchMode.platformDefault);
         }
       } else {
-        // Try anyway
         opened = await launchUrl(uri, mode: LaunchMode.inAppBrowserView);
       }
 
@@ -210,6 +200,32 @@ class _AdminReviewApplicationDetailPageState
   /* ------------------------ Approve / Reject / Delete ----------------------- */
 
   Future<void> _approve(String appId, Map<String, dynamic> app) async {
+    // ✅ NEW: Double confirmation prompt
+    final userName = _readName(await _getUser((app['userId'] ?? '').toString()));
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Confirm Approval'),
+        content: Text(
+          'Are you sure you want to APPROVE the application for ${userName.isNotEmpty ? userName : 'this user'}?\n\n'
+              'This will update their role and cannot be easily undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.green),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Confirm Approve'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true) return;
+
     final uid = FirebaseAuth.instance.currentUser?.uid ?? 'system';
     setState(() => _working = true);
     try {
@@ -220,7 +236,6 @@ class _AdminReviewApplicationDetailPageState
         'adminReason': _reasonCtrl.text.trim(),
       });
 
-      // Also update user's role
       final userId = (app['userId'] ?? '').toString();
       final requestedRole = (app['requestedRole'] ?? '').toString();
       if (userId.isNotEmpty && requestedRole.isNotEmpty) {
@@ -245,6 +260,31 @@ class _AdminReviewApplicationDetailPageState
   }
 
   Future<void> _reject(String appId) async {
+    // ✅ NEW: Double confirmation prompt
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Confirm Rejection'),
+        content: const Text(
+          'Are you sure you want to REJECT this application?\n\n'
+              'The applicant will be notified of the rejection.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Confirm Reject'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true) return;
+
     final uid = FirebaseAuth.instance.currentUser?.uid ?? 'system';
     setState(() => _working = true);
     try {
@@ -269,14 +309,26 @@ class _AdminReviewApplicationDetailPageState
   }
 
   Future<void> _delete(String appId) async {
+    // ✅ ENHANCED: More explicit double confirmation
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('Delete Application'),
-        content: const Text('This will permanently delete this application. Continue?'),
+        title: const Text('⚠️ Delete Application'),
+        content: const Text(
+          'This will PERMANENTLY DELETE this application from the database.\n\n'
+              '⚠️ This action CANNOT be undone!\n\n'
+              'Are you absolutely sure you want to continue?',
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Delete')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Yes, Delete Permanently'),
+          ),
         ],
       ),
     );
@@ -286,7 +338,7 @@ class _AdminReviewApplicationDetailPageState
     try {
       await _appsCol.doc(appId).delete();
       if (!mounted) return;
-      Navigator.pop(context); // Back to list
+      Navigator.pop(context);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -321,16 +373,13 @@ class _AdminReviewApplicationDetailPageState
             final app = appSnap.data!.data()!;
             final userId = (app['userId'] ?? '').toString();
 
-            // Normalize requestedRole (e.g. "peer_tutor", "peer tutor")
             final requestedRole = (app['requestedRole'] ?? '').toString().toLowerCase();
             final normalizedRole = requestedRole.replaceAll(RegExp(r'[\s_\-]+'), '');
             final isTutor = normalizedRole == 'peertutor';
 
-            // Approval flags
             final hopApproved = (app['hopApproved'] ?? false) == true;
             final schoolCounsellorApproved = (app['schoolCounsellorApproved'] ?? false) == true;
 
-            // Prefer interestsIds; fallback to legacy interests
             final dynamicIds = (app['interestsIds'] is List)
                 ? (app['interestsIds'] as List)
                 : ((app['interests'] is List)
@@ -371,7 +420,11 @@ class _AdminReviewApplicationDetailPageState
                 final (borderClr, badgeBg, badgeFg) = _statusColors(statusRaw);
                 final motivation = (app['motivation'] ?? '').toString();
 
-                // file props
+                // ✅ NEW: Check if already decided
+                final isApproved = statusRaw.toLowerCase() == 'approved';
+                final isRejected = statusRaw.toLowerCase() == 'rejected';
+                final isDecided = isApproved || isRejected;
+
                 final fileName = (app['letterFileName'] ?? app['fileName'] ?? '').toString();
                 final fileUrl =
                 (app['letterFileUrl'] ?? app['fileUrl'] ?? app['letterUrl'] ?? '').toString();
@@ -408,7 +461,6 @@ class _AdminReviewApplicationDetailPageState
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          // Header row
                           Row(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
@@ -452,7 +504,6 @@ class _AdminReviewApplicationDetailPageState
                                     if (studentId.isNotEmpty) Text(studentId, style: t.bodySmall),
                                     if (email.isNotEmpty) Text(email, style: t.bodySmall),
 
-                                    // Approval chips (both may show)
                                     if (statusRaw.toLowerCase() != 'hop rejected' && hopApproved)
                                       const Padding(
                                         padding: EdgeInsets.only(top: 4),
@@ -470,7 +521,6 @@ class _AdminReviewApplicationDetailPageState
                           ),
                           const SizedBox(height: 12),
 
-                          // Interests
                           _Section(
                             title: isTutor ? 'Academic Interest' : 'Counselling Topics',
                             child: interestTitles.isEmpty
@@ -497,7 +547,6 @@ class _AdminReviewApplicationDetailPageState
                           ),
                           const SizedBox(height: 12),
 
-                          // Motivation
                           _Section(
                             title: 'Motivation to be ${isTutor ? "Tutor" : "Counsellor"}',
                             child: TextField(
@@ -515,7 +564,6 @@ class _AdminReviewApplicationDetailPageState
                           ),
                           const SizedBox(height: 12),
 
-                          // Recommendation Letter
                           _Section(
                             title: 'Recommendation Letter by HOP',
                             child: InkWell(
@@ -551,7 +599,6 @@ class _AdminReviewApplicationDetailPageState
                           ),
                           const SizedBox(height: 12),
 
-                          // Decision
                           _Section(
                             title: _statusText(statusRaw) == 'Rejected'
                                 ? 'Rejected by Admin'
@@ -567,6 +614,7 @@ class _AdminReviewApplicationDetailPageState
                                   TextField(
                                     controller: _reasonCtrl,
                                     maxLines: 4,
+                                    readOnly: isDecided, // ✅ NEW: Read-only if decided
                                     decoration: InputDecoration(
                                       hintText: 'Reason / notes (optional)',
                                       contentPadding: const EdgeInsets.symmetric(
@@ -580,35 +628,42 @@ class _AdminReviewApplicationDetailPageState
                                 Row(
                                   children: [
                                     Expanded(
-                                      child: FilledButton(
-                                        style: FilledButton.styleFrom(
-                                          backgroundColor: Colors.black,
-                                          padding: const EdgeInsets.symmetric(
-                                              horizontal: 18, vertical: 10),
-                                          shape: RoundedRectangleBorder(
-                                              borderRadius: BorderRadius.circular(10)),
+                                      child: Opacity(
+                                        opacity: isDecided ? 0.4 : 1.0, // ✅ NEW: Faded when decided
+                                        child: FilledButton(
+                                          style: FilledButton.styleFrom(
+                                            backgroundColor: Colors.black,
+                                            padding: const EdgeInsets.symmetric(
+                                                horizontal: 18, vertical: 10),
+                                            shape: RoundedRectangleBorder(
+                                                borderRadius: BorderRadius.circular(10)),
+                                          ),
+                                          onPressed: (_working || isDecided) // ✅ NEW: Disabled if decided
+                                              ? null
+                                              : () => _approve(widget.appId, app),
+                                          child: const Text('Approve',
+                                              style: TextStyle(color: Colors.white)),
                                         ),
-                                        onPressed: _working
-                                            ? null
-                                            : () => _approve(widget.appId, app),
-                                        child: const Text('Approve',
-                                            style: TextStyle(color: Colors.white)),
                                       ),
                                     ),
                                     const SizedBox(width: 10),
                                     Expanded(
-                                      child: FilledButton(
-                                        style: FilledButton.styleFrom(
-                                          backgroundColor: Colors.red,
-                                          padding: const EdgeInsets.symmetric(
-                                              horizontal: 18, vertical: 10),
-                                          shape: RoundedRectangleBorder(
-                                              borderRadius: BorderRadius.circular(10)),
+                                      child: Opacity(
+                                        opacity: isDecided ? 0.4 : 1.0, // ✅ NEW: Faded when decided
+                                        child: FilledButton(
+                                          style: FilledButton.styleFrom(
+                                            backgroundColor: Colors.red,
+                                            padding: const EdgeInsets.symmetric(
+                                                horizontal: 18, vertical: 10),
+                                            shape: RoundedRectangleBorder(
+                                                borderRadius: BorderRadius.circular(10)),
+                                          ),
+                                          onPressed: (_working || isDecided) // ✅ NEW: Disabled if decided
+                                              ? null
+                                              : () => _reject(widget.appId),
+                                          child: const Text('Reject',
+                                              style: TextStyle(color: Colors.white)),
                                         ),
-                                        onPressed:
-                                        _working ? null : () => _reject(widget.appId),
-                                        child: const Text('Reject',
-                                            style: TextStyle(color: Colors.white)),
                                       ),
                                     ),
                                   ],
@@ -782,7 +837,6 @@ class _IconSquare extends StatelessWidget {
   }
 }
 
-// Shows when hopApproved == true
 class _HopChip extends StatelessWidget {
   const _HopChip();
 
@@ -803,7 +857,6 @@ class _HopChip extends StatelessWidget {
   }
 }
 
-// Shows when schoolCounsellorApproved == true
 class _SchoolCounsellorChip extends StatelessWidget {
   const _SchoolCounsellorChip();
 
@@ -812,7 +865,7 @@ class _SchoolCounsellorChip extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: const Color(0xFFDFF6E7), // soft green
+        color: const Color(0xFFDFF6E7),
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: const Color(0xFF006400).withOpacity(.25)),
       ),

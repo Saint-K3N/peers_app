@@ -1,5 +1,7 @@
 // lib/admin_review_reports_page.dart
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 class AdminReviewReportsPage extends StatefulWidget {
   const AdminReviewReportsPage({super.key});
@@ -8,39 +10,15 @@ class AdminReviewReportsPage extends StatefulWidget {
   State<AdminReviewReportsPage> createState() => _AdminReviewReportsPageState();
 }
 
-/* ------------------------------- Mock Model ------------------------------- */
-
-class ReportItem {
-  String reportedUser;
-  String reportedBy;
-  DateTime date;
-  String reason;
-  String reportId;
-  bool temporarilyDisabled;
-
-  ReportItem({
-    required this.reportedUser,
-    required this.reportedBy,
-    required this.date,
-    required this.reason,
-    required this.reportId,
-    this.temporarilyDisabled = false,
-  });
-}
-
-/* ---------------------------------- Page ---------------------------------- */
-
 class _AdminReviewReportsPageState extends State<AdminReviewReportsPage> {
-  final List<ReportItem> _reports = [
-    ReportItem(
-      reportedUser: 'Justin',
-      reportedBy: 'Ken',
-      date: DateTime(2025, 6, 4),
-      reason: 'Constant cancelling appointments',
-      reportId: '11111',
-      temporarilyDisabled: true,
-    ),
-  ];
+  final _searchCtrl = TextEditingController();
+  String _searchQuery = '';
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
 
   String _prettyDate(DateTime d) {
     const months = [
@@ -50,10 +28,14 @@ class _AdminReviewReportsPageState extends State<AdminReviewReportsPage> {
     String ordinal(int n) {
       if (n >= 11 && n <= 13) return '${n}th';
       switch (n % 10) {
-        case 1: return '${n}st';
-        case 2: return '${n}nd';
-        case 3: return '${n}rd';
-        default: return '${n}th';
+        case 1:
+          return '${n}st';
+        case 2:
+          return '${n}nd';
+        case 3:
+          return '${n}rd';
+        default:
+          return '${n}th';
       }
     }
     return '${ordinal(d.day)} ${months[d.month]} ${d.year}';
@@ -72,29 +54,157 @@ class _AdminReviewReportsPageState extends State<AdminReviewReportsPage> {
             children: [
               _HeaderBar(
                 onBack: () => Navigator.maybePop(context),
-                onLogout: () => Navigator.pushNamedAndRemoveUntil(context, '/login', (_) => false),
+                onLogout: () => Navigator.pushNamedAndRemoveUntil(
+                    context, '/login', (_) => false),
               ),
               const SizedBox(height: 16),
 
               // Title
-              Text('Review Report', style: t.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
+              Text('Review Reports',
+                  style: t.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
               const SizedBox(height: 4),
-              Text('Manage reports', style: t.bodySmall),
+              Text('Manage user reports', style: t.bodySmall),
               const SizedBox(height: 14),
 
-              // Total reports stat
-              _StatBox(count: _reports.length, label: 'Total Reports'),
+              // ✅ NEW: Search Bar
+              Container(
+                height: 44,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.black12),
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Row(
+                  children: [
+                    const Icon(Icons.search, size: 20, color: Colors.black54),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: TextField(
+                        controller: _searchCtrl,
+                        decoration: const InputDecoration(
+                          hintText: 'Search by reported user name...',
+                          border: InputBorder.none,
+                        ),
+                        onChanged: (value) {
+                          setState(() {
+                            _searchQuery = value.trim().toLowerCase();
+                          });
+                        },
+                      ),
+                    ),
+                    if (_searchQuery.isNotEmpty)
+                      IconButton(
+                        icon: const Icon(Icons.clear, size: 20),
+                        onPressed: () {
+                          _searchCtrl.clear();
+                          setState(() {
+                            _searchQuery = '';
+                          });
+                        },
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 14),
+
+              // ✅ ENHANCED: Stats Row with Total + Pending
+              StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                stream: FirebaseFirestore.instance
+                    .collection('reports')
+                    .snapshots(),
+                builder: (context, snap) {
+                  final allReports = snap.data?.docs ?? [];
+                  final pendingReports = allReports
+                      .where((d) =>
+                  (d.data()['status'] ?? 'pending').toString() ==
+                      'pending')
+                      .length;
+                  final totalReports = allReports.length;
+
+                  return Row(
+                    children: [
+                      _StatBox(
+                        count: totalReports,
+                        label: 'Total Reports',
+                        color: Colors.blue,
+                      ),
+                      const SizedBox(width: 12),
+                      _StatBox(
+                        count: pendingReports,
+                        label: 'Pending Reports',
+                        color: Colors.orange,
+                      ),
+                    ],
+                  );
+                },
+              ),
               const SizedBox(height: 16),
 
-              // List
-              for (final r in _reports) ...[
-                _ReportCard(
-                  item: r,
-                  prettyDate: _prettyDate(r.date),
-                  onToggleDisable: () => setState(() => r.temporarilyDisabled = !r.temporarilyDisabled),
-                ),
-                const SizedBox(height: 14),
-              ],
+              // List of reports (live with search filter)
+              StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                stream: FirebaseFirestore.instance
+                    .collection('reports')
+                    .orderBy('createdAt', descending: true)
+                    .snapshots(),
+                builder: (context, snap) {
+                  if (snap.connectionState == ConnectionState.waiting) {
+                    return const Center(
+                        child: Padding(
+                            padding: EdgeInsets.symmetric(vertical: 24),
+                            child: CircularProgressIndicator()));
+                  }
+                  if (snap.hasError) {
+                    return Text('Error: ${snap.error}',
+                        style: t.bodyMedium?.copyWith(color: Colors.red));
+                  }
+
+                  var reports = snap.data?.docs ?? [];
+
+                  // ✅ NEW: Apply search filter
+                  if (_searchQuery.isNotEmpty) {
+                    reports = reports.where((report) {
+                      final data = report.data();
+                      final reportedName =
+                      (data['reportedUserName'] ?? '').toString().toLowerCase();
+                      return reportedName.contains(_searchQuery);
+                    }).toList();
+                  }
+
+                  if (reports.isEmpty) {
+                    return Container(
+                      padding: const EdgeInsets.all(24),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.black12),
+                      ),
+                      child: Center(
+                        child: Text(
+                          _searchQuery.isNotEmpty
+                              ? 'No reports found for "$_searchQuery"'
+                              : 'No reports yet.',
+                        ),
+                      ),
+                    );
+                  }
+
+                  return Column(
+                    children: [
+                      for (final report in reports) ...[
+                        _ReportCard(
+                          reportDoc: report,
+                          prettyDate: _prettyDate((report.data()['createdAt']
+                          as Timestamp?)
+                              ?.toDate() ??
+                              DateTime.now()),
+                        ),
+                        const SizedBox(height: 14),
+                      ],
+                    ],
+                  );
+                },
+              ),
             ],
           ),
         ),
@@ -129,17 +239,24 @@ class _HeaderBar extends StatelessWidget {
             ),
           ),
           alignment: Alignment.center,
-          child: Text('PEERS', style: t.labelMedium?.copyWith(color: Colors.white, fontWeight: FontWeight.bold)),
+          child: Text('PEERS',
+              style: t.labelMedium
+                  ?.copyWith(color: Colors.white, fontWeight: FontWeight.bold)),
         ),
         const SizedBox(width: 8),
 
-        // Flexible title column (prevents right overflow)
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Admin', maxLines: 1, overflow: TextOverflow.ellipsis, style: t.titleMedium),
-              Text('Portal', maxLines: 1, overflow: TextOverflow.ellipsis, style: t.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
+              Text('Admin',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: t.titleMedium),
+              Text('Portal',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: t.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
             ],
           ),
         ),
@@ -178,151 +295,361 @@ class _IconSquare extends StatelessWidget {
   }
 }
 
+// ✅ ENHANCED: Stat box with color parameter
 class _StatBox extends StatelessWidget {
   final int count;
   final String label;
-  const _StatBox({required this.count, required this.label});
+  final Color color;
+  const _StatBox({
+    required this.count,
+    required this.label,
+    this.color = Colors.black,
+  });
 
   @override
   Widget build(BuildContext context) {
     final t = Theme.of(context).textTheme;
-    return Container(
-      width: 128,
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.black12),
-      ),
-      child: Column(
-        children: [
-          Text('$count', style: t.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
-          const SizedBox(height: 4),
-          Text(label, textAlign: TextAlign.center, style: t.bodySmall),
-        ],
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: color.withOpacity(0.3), width: 2),
+        ),
+        child: Column(
+          children: [
+            Text('$count',
+                style: t.titleLarge
+                    ?.copyWith(fontWeight: FontWeight.w800, color: color)),
+            const SizedBox(height: 4),
+            Text(label,
+                textAlign: TextAlign.center,
+                style: t.bodySmall?.copyWith(fontWeight: FontWeight.w600)),
+          ],
+        ),
       ),
     );
   }
 }
 
 class _ReportCard extends StatelessWidget {
-  final ReportItem item;
+  final QueryDocumentSnapshot<Map<String, dynamic>> reportDoc;
   final String prettyDate;
-  final VoidCallback onToggleDisable;
 
   const _ReportCard({
-    required this.item,
+    required this.reportDoc,
     required this.prettyDate,
-    required this.onToggleDisable,
   });
+
+  Future<void> _toggleDeactivate(BuildContext context) async {
+    final data = reportDoc.data();
+    final reportedUserId = (data['reportedUserId'] ?? '').toString();
+    final reportedUserName = (data['reportedUserName'] ?? 'User').toString();
+
+    if (reportedUserId.isEmpty) return;
+
+    final userDoc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(reportedUserId)
+        .get();
+
+    final currentStatus =
+    (userDoc.data()?['status'] ?? 'active').toString().toLowerCase();
+    final isCurrentlyActive = currentStatus == 'active';
+
+    final action = isCurrentlyActive ? 'deactivate' : 'reactivate';
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text(
+            '${action == 'deactivate' ? 'Deactivate' : 'Reactivate'} Account'),
+        content: Text(
+            'Are you sure you want to $action the account of $reportedUserName?\n\n${isCurrentlyActive ? 'They will lose access and must contact admin to regain access.' : 'They will regain access to their account.'}'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+                backgroundColor:
+                isCurrentlyActive ? Colors.red : Colors.green),
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(action == 'deactivate' ? 'Deactivate' : 'Reactivate'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true || !context.mounted) return;
+
+    try {
+      final adminUid = FirebaseAuth.instance.currentUser?.uid ?? '';
+      final newStatus = isCurrentlyActive ? 'inactive' : 'active';
+
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(reportedUserId)
+          .set({'status': newStatus}, SetOptions(merge: true));
+
+      await reportDoc.reference.set({
+        'status': 'reviewed',
+        'reviewedAt': FieldValue.serverTimestamp(),
+        'reviewedBy': adminUid,
+        'actionTaken': action == 'deactivate' ? 'deactivated' : 'reactivated',
+      }, SetOptions(merge: true));
+
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+                'Account ${action == 'deactivate' ? 'deactivated' : 'reactivated'} successfully.'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _dismissReport(BuildContext context) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Dismiss Report'),
+        content: const Text(
+            'Mark this report as reviewed without taking action?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Dismiss'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true || !context.mounted) return;
+
+    try {
+      final adminUid = FirebaseAuth.instance.currentUser?.uid ?? '';
+
+      await reportDoc.reference.set({
+        'status': 'dismissed',
+        'reviewedAt': FieldValue.serverTimestamp(),
+        'reviewedBy': adminUid,
+        'actionTaken': 'dismissed',
+      }, SetOptions(merge: true));
+
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Report dismissed.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed: $e')),
+        );
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     final t = Theme.of(context).textTheme;
-    final border = Border.all(color: Colors.black12);
+    final data = reportDoc.data();
+
+    final reportedUserName =
+    (data['reportedUserName'] ?? 'Unknown').toString();
+    final reportedByName = (data['reportedByName'] ?? 'Unknown').toString();
+    final reason = (data['reason'] ?? 'No reason provided').toString();
+    final status = (data['status'] ?? 'pending').toString();
+    final reportedUserId = (data['reportedUserId'] ?? '').toString();
+
+    final isPending = status == 'pending';
+    final isDismissed = status == 'dismissed';
 
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(12),
-        border: border,
-        boxShadow: [BoxShadow(color: Colors.black.withOpacity(.04), blurRadius: 8, offset: const Offset(0, 4))],
+        border: Border.all(
+            color: isPending ? Colors.orange : Colors.black12,
+            width: isPending ? 2 : 1),
+        boxShadow: [
+          BoxShadow(
+              color: Colors.black.withOpacity(.04),
+              blurRadius: 8,
+              offset: const Offset(0, 4))
+        ],
       ),
       padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Top row: username + red pill on the right (wrap-safe)
-          LayoutBuilder(
-            builder: (context, c) {
-              final tight = c.maxWidth < 350;
-              final name = Text(item.reportedUser, style: t.titleMedium?.copyWith(fontWeight: FontWeight.w700));
+          // Top row: Name + Status badge + Report count
+          Row(
+            children: [
+              Expanded(
+                child: Text(reportedUserName,
+                    style:
+                    t.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
+              ),
 
-              final pill = _DisablePill(
-                enabled: item.temporarilyDisabled,
-                onTap: onToggleDisable,
-              );
+              // ✅ NEW: Report count badge
+              if (reportedUserId.isNotEmpty)
+                FutureBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                  future: FirebaseFirestore.instance
+                      .collection('reports')
+                      .where('reportedUserId', isEqualTo: reportedUserId)
+                      .get(),
+                  builder: (context, countSnap) {
+                    final reportCount = countSnap.data?.docs.length ?? 0;
+                    return Container(
+                      margin: const EdgeInsets.only(right: 8),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: reportCount > 1
+                            ? Colors.red.shade100
+                            : Colors.grey.shade200,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                            color: reportCount > 1 ? Colors.red : Colors.grey,
+                            width: 1.5),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.flag,
+                              size: 14,
+                              color:
+                              reportCount > 1 ? Colors.red : Colors.grey),
+                          const SizedBox(width: 4),
+                          Text(
+                            '$reportCount',
+                            style: TextStyle(
+                              color:
+                              reportCount > 1 ? Colors.red : Colors.grey,
+                              fontWeight: FontWeight.w700,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
 
-              if (tight) {
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    name,
-                    const SizedBox(height: 8),
-                    Align(alignment: Alignment.centerRight, child: pill),
-                  ],
-                );
-              }
-
-              return Row(
-                children: [
-                  Expanded(child: name),
-                  const SizedBox(width: 8),
-                  FittedBox(child: pill),
-                ],
-              );
-            },
+              // Status badge
+              if (!isPending)
+                Container(
+                  padding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: isDismissed
+                        ? Colors.orange.shade100
+                        : Colors.green.shade100,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                        color: isDismissed ? Colors.orange : Colors.green,
+                        width: 1),
+                  ),
+                  child: Text(
+                    status.toUpperCase(),
+                    style: TextStyle(
+                      color: isDismissed ? Colors.orange : Colors.green,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 11,
+                    ),
+                  ),
+                ),
+            ],
           ),
 
           const SizedBox(height: 8),
-          Text('Reported by: ${item.reportedBy}', style: t.bodySmall),
-          Text('Date Reported: $prettyDate', style: t.bodySmall),
+          Text('Reported by: $reportedByName', style: t.bodySmall),
+          Text('Date: $prettyDate', style: t.bodySmall),
           const SizedBox(height: 6),
-          Text('Reason: ${item.reason}', style: t.bodySmall),
+          Text('Reason: $reason', style: t.bodySmall),
           const SizedBox(height: 10),
 
-          // Report ID on the right (no overflow)
           Align(
             alignment: Alignment.centerRight,
-            child: Text('Report ID: ${item.reportId}', style: t.bodySmall),
+            child: Text('Report ID: ${reportDoc.id}',
+                style: t.bodySmall?.copyWith(color: Colors.black54)),
           ),
-        ],
-      ),
-    );
-  }
-}
 
-class _DisablePill extends StatelessWidget {
-  final bool enabled;
-  final VoidCallback onTap;
-  const _DisablePill({required this.enabled, required this.onTap});
+          if (reportedUserId.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            const Divider(),
+            const SizedBox(height: 8),
 
-  @override
-  Widget build(BuildContext context) {
-    final text = 'Temporary Disable\nReported User Account';
-    return InkWell(
-      borderRadius: BorderRadius.circular(18),
-      onTap: onTap,
-      child: Ink(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: BoxDecoration(
-          color: Colors.red,
-          borderRadius: BorderRadius.circular(18),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // two-line label
-            Text(
-              text,
-              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, height: 1.1),
-            ),
-            const SizedBox(width: 8),
-            // small black circle with check when enabled, outline otherwise
-            Container(
-              width: 22,
-              height: 22,
-              decoration: BoxDecoration(
-                color: enabled ? Colors.black : Colors.transparent,
-                border: Border.all(color: Colors.black, width: 2),
-                shape: BoxShape.circle,
-              ),
-              child: enabled
-                  ? const Icon(Icons.check, size: 14, color: Colors.white)
-                  : const SizedBox.shrink(),
+            FutureBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+              future: FirebaseFirestore.instance
+                  .collection('users')
+                  .doc(reportedUserId)
+                  .get(),
+              builder: (context, userSnap) {
+                final userStatus =
+                (userSnap.data?.data()?['status'] ?? 'active')
+                    .toString()
+                    .toLowerCase();
+                final isActive = userStatus == 'active';
+
+                return Row(
+                  children: [
+                    Expanded(
+                      child: SizedBox(
+                        height: 36,
+                        child: OutlinedButton.icon(
+                          onPressed:
+                          isPending ? () => _dismissReport(context) : null,
+                          icon: const Icon(Icons.close, size: 18),
+                          label: const Text('Dismiss'),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.orange,
+                            side: const BorderSide(color: Colors.orange),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: SizedBox(
+                        height: 36,
+                        child: FilledButton.icon(
+                          onPressed: () => _toggleDeactivate(context),
+                          icon: Icon(
+                              isActive ? Icons.block : Icons.check_circle,
+                              size: 18),
+                          label: Text(isActive ? 'Deactivate' : 'Reactivate'),
+                          style: FilledButton.styleFrom(
+                            backgroundColor:
+                            isActive ? Colors.red : Colors.green,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              },
             ),
           ],
-        ),
+        ],
       ),
     );
   }
