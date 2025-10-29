@@ -4,6 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'; // For TextInputFormatter
 
+import 'services/gemini_service.dart';
 class PeerTutorStudentDetailPage extends StatefulWidget {
   const PeerTutorStudentDetailPage({super.key});
 
@@ -178,15 +179,7 @@ class _PeerTutorStudentDetailPageState extends State<PeerTutorStudentDetailPage>
     }
   }
 
-  String _passPrediction(num? currentPct){
-    if (currentPct == null) return '—';
-    if (currentPct >= 75) return 'High';
-    if (currentPct >= 60) return 'Moderate';
-    if (currentPct >= 50) return 'Borderline';
-    return 'Low';
-  }
-
-  // save a grade entry
+// save a grade entry
   Future<void> _saveGrade(String studentId) async {
     final subject = _subjectCtrl.text.trim();
     final currentPct = num.tryParse(_currentGradeCtrl.text.trim());
@@ -216,6 +209,18 @@ class _PeerTutorStudentDetailPageState extends State<PeerTutorStudentDetailPage>
       }
     }
 
+    // Get prediction from Gemini AI
+    String prediction = '—';
+    try {
+      prediction = await GeminiService.getPrediction(
+        subject: subject,
+        currentGrade: currentPct,
+        pastGrades: past,
+      );
+    } catch (e) {
+      print('Error getting Gemini prediction: $e');
+    }
+
     final nowClient = Timestamp.now();
     final doc = {
       'studentId': studentId,
@@ -223,7 +228,7 @@ class _PeerTutorStudentDetailPageState extends State<PeerTutorStudentDetailPage>
       'subject': subject,
       'currentPercent': currentPct,
       'pastGrades': past,                // <-- multiple previous grades saved here (max 3)
-      'prediction': _passPrediction(currentPct),
+      'prediction': prediction,
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
       'updatedAtClient': nowClient,      // for instant client-side sort
@@ -281,7 +286,6 @@ class _PeerTutorStudentDetailPageState extends State<PeerTutorStudentDetailPage>
           statusColors: _statusColors,
           fmtDateLong: _fmtDateLong,
           fmtTime: _fmtTime,
-          passPrediction: _passPrediction,
         ),
       ),
     );
@@ -315,8 +319,6 @@ class _Body extends StatelessWidget {
   final (Color, Color) Function(String) statusColors;
   final String Function(DateTime) fmtDateLong;
   final String Function(TimeOfDay) fmtTime;
-  final String Function(num?) passPrediction;
-
   const _Body({
   required this.studentId,
   required this.tab,
@@ -336,7 +338,6 @@ class _Body extends StatelessWidget {
   required this.statusColors,
   required this.fmtDateLong,
   required this.fmtTime,
-  required this.passPrediction,
   });
 
   @override
@@ -487,7 +488,6 @@ class _Body extends StatelessWidget {
   pastLabelCtrls: pastLabelCtrls,
   pastPercentCtrls: pastPercentCtrls,
   onAddPast: onAddPast,
-  passPrediction: passPrediction,
   maxPastRows: maxPastRows, // Pass max limit
   ),
   ],
@@ -834,7 +834,7 @@ class _SessionTile extends StatelessWidget {
   Expanded(child: Text('Tutoring for ${m['studentName'] ?? 'Student'}', style: t.titleMedium?.copyWith(fontWeight: FontWeight.w700))),
   Container(
   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-  decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(10), border: Border.all(color: fg.withOpacity(.3))),
+  decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(10), border: Border.all(color: fg.withValues(alpha: .3))),
   child: Text(label, style: t.labelMedium?.copyWith(color: fg, fontWeight: FontWeight.w700)),
   )
   ]),
@@ -857,7 +857,6 @@ class _ProgressSection extends StatelessWidget {
   final List<TextEditingController> pastLabelCtrls;
   final List<TextEditingController> pastPercentCtrls;
   final VoidCallback onAddPast;
-  final String Function(num?) passPrediction;
   final int maxPastRows; // New: Max rows limit
 
   const _ProgressSection({
@@ -867,7 +866,6 @@ class _ProgressSection extends StatelessWidget {
     required this.pastLabelCtrls,
     required this.pastPercentCtrls,
     required this.onAddPast,
-    required this.passPrediction,
     required this.maxPastRows, // Added to constructor
   });
 

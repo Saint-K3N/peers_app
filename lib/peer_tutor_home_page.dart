@@ -300,7 +300,7 @@ class _GreetingCardTutor extends StatelessWidget {
                 child: _StatTile(
                   value: '$pending',
                   // Label updated to reflect new pending states
-                  label: 'Pending Requests & Reschedules',
+                  label: 'Pending Requests',
                   onTap: onTapPending,
                 ),
               ),

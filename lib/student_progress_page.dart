@@ -2,6 +2,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'services/gemini_service.dart';
 
 class StudentProgressPage extends StatefulWidget {
   const StudentProgressPage({super.key});
@@ -34,12 +35,7 @@ class _StudentProgressPageState extends State<StudentProgressPage> {
     }
   }
 
-  _Prediction _predictionFromPercent(num? p) {
-    if (p == null) return _Prediction.medium;
-    if (p >= 75) return _Prediction.high;
-    if (p >= 60) return _Prediction.medium;
-    return _Prediction.low;
-  }
+  // REMOVED: _predictionFromPercent(num? p) - now using Gemini instead
 
   int _bestEpoch(Map<String, dynamic> m) {
     Timestamp? ts;
@@ -79,7 +75,7 @@ class _StudentProgressPageState extends State<StudentProgressPage> {
     return out;
   }
 
-  /// Fallback: build up to 3 “previous grades” from historical snapshots.
+  /// Fallback: build up to 3 "previous grades" from historical snapshots.
   List<_GradePoint> _pastFromHistory(List<Map<String, dynamic>> list) {
     final out = <_GradePoint>[];
     for (final m in list.take(3)) {
@@ -197,18 +193,26 @@ class _StudentProgressPageState extends State<StudentProgressPage> {
                       (latest['prediction'] ?? '').toString();
                       final prediction = (predictionStr.isNotEmpty)
                           ? _predictionFromString(predictionStr)
-                          : _predictionFromPercent(latest['currentPercent'] as num?);
+                          : _Prediction.medium; // CHANGED: Default to medium, will be replaced by Gemini
 
                       // 1) prefer explicit pastGrades from the latest doc
                       var prev = _pastFromLatestDoc(latest);
                       // 2) if empty, fallback to historical snapshot-based
                       if (prev.isEmpty) prev = _pastFromHistory(list);
 
+                      // ADDED: Prepare data for Gemini API
+                      final pastGradesForAI = prev.map((gp) => {
+                        'label': gp.label,
+                        'percent': gp.percent,
+                      }).toList();
+
                       items.add(_SubjectProgress(
                         name: subject,
                         currentPercent: currentPct ?? 0,
-                        previous: prev, // <-- shows real "previous grades"
+                        previous: prev,
                         prediction: prediction,
+                        pastGradesForAI: pastGradesForAI,
+                        savedPrediction: predictionStr.isNotEmpty ? predictionStr : null, // ADDED
                       ));
                     });
 
@@ -238,17 +242,17 @@ class _StudentProgressPageState extends State<StudentProgressPage> {
                           borderRadius: BorderRadius.circular(12),
                           border: Border.all(color: Colors.black12),
                         ),
-                        child: const Text('No progress records found.'),
+                        child: const Text('No progress data found.'),
                       );
                     }
 
                     return Column(
-                      children: [
-                        for (final s in filtered) ...[
-                          _ProgressCard(subject: s),
-                          const SizedBox(height: 12),
-                        ],
-                      ],
+                      children: filtered
+                          .map((sp) => Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: _ProgressCard(subject: sp),
+                      ))
+                          .toList(),
                     );
                   },
                 ),
@@ -260,19 +264,23 @@ class _StudentProgressPageState extends State<StudentProgressPage> {
   }
 }
 
-/* --------------------------------- Model ---------------------------------- */
+/* --------------------------------- Models -------------------------------- */
 
 class _SubjectProgress {
   final String name;
   final int currentPercent;
-  final List<_GradePoint> previous; // <-- explicit previous grades
+  final List<_GradePoint> previous;
   final _Prediction prediction;
+  final List<Map<String, dynamic>> pastGradesForAI;
+  final String? savedPrediction; // ADDED: Prediction from Firebase
 
   const _SubjectProgress({
     required this.name,
     required this.currentPercent,
     required this.previous,
     required this.prediction,
+    required this.pastGradesForAI,
+    this.savedPrediction, // ADDED
   });
 }
 
@@ -380,9 +388,63 @@ class _StudentHeader extends StatelessWidget {
   }
 }
 
-class _ProgressCard extends StatelessWidget {
+// CHANGED: StatelessWidget -> StatefulWidget to fetch Gemini prediction
+class _ProgressCard extends StatefulWidget {
   final _SubjectProgress subject;
   const _ProgressCard({required this.subject});
+
+  @override
+  State<_ProgressCard> createState() => _ProgressCardState();
+}
+
+class _ProgressCardState extends State<_ProgressCard> {
+  String? _geminiPrediction; // ADDED: Store the Gemini result
+  bool _isLoading = true; // ADDED: Loading state
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchPrediction(); // ADDED: Fetch prediction on init
+  }
+
+  // ADDED: Fetch prediction from Gemini (only if not saved in Firebase)
+  Future<void> _fetchPrediction() async {
+    // If prediction already saved in Firebase, use it (no API call needed)
+    if (widget.subject.savedPrediction != null && widget.subject.savedPrediction!.isNotEmpty) {
+      if (mounted) {
+        setState(() {
+          _geminiPrediction = widget.subject.savedPrediction;
+          _isLoading = false;
+        });
+      }
+      print('✅ Using saved prediction from Firebase: ${widget.subject.savedPrediction}');
+      return;
+    }
+
+    // Only call API if prediction not in Firebase
+    print('⚠️ No saved prediction, calling Gemini API...');
+    try {
+      final result = await GeminiService.getPrediction(
+        subject: widget.subject.name,
+        currentGrade: widget.subject.currentPercent,
+        pastGrades: widget.subject.pastGradesForAI,
+      );
+      if (mounted) {
+        setState(() {
+          _geminiPrediction = result;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      print('Error fetching Gemini prediction: $e');
+      if (mounted) {
+        setState(() {
+          _geminiPrediction = '—';
+          _isLoading = false;
+        });
+      }
+    }
+  }
 
   Color _predictionColor(_Prediction p) {
     switch (p) {
@@ -416,15 +478,22 @@ class _ProgressCard extends StatelessWidget {
       children: [
         Text('Current Grade', style: labelStyle),
         const SizedBox(height: 4),
-        Text('${subject.currentPercent}%',
+        Text('${widget.subject.currentPercent}%',
             style: t.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
         const SizedBox(height: 16),
         Text('Prediction of passing', style: labelStyle),
         const SizedBox(height: 4),
-        Text(
-          _predictionText(subject.prediction),
+        // CHANGED: Display Gemini prediction instead of hardcoded value
+        _isLoading
+            ? const SizedBox(
+          width: 20,
+          height: 20,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        )
+            : Text(
+          _geminiPrediction ?? '—',
           style: t.titleMedium?.copyWith(
-            color: _predictionColor(subject.prediction),
+            color: _predictionColor(widget.subject.prediction),
             fontWeight: FontWeight.w700,
           ),
         ),
@@ -436,10 +505,10 @@ class _ProgressCard extends StatelessWidget {
       children: [
         Text('Previous grades', style: labelStyle),
         const SizedBox(height: 4),
-        if (subject.previous.isEmpty)
+        if (widget.subject.previous.isEmpty)
           Text('—', style: t.bodyMedium)
         else
-          for (final gp in subject.previous)
+          for (final gp in widget.subject.previous)
             Padding(
               padding: const EdgeInsets.only(bottom: 4),
               child: Row(
@@ -461,7 +530,7 @@ class _ProgressCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(10),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(.03),
+            color: Colors.black.withValues(alpha: .03),
             blurRadius: 8,
             offset: const Offset(0, 4),
           ),
@@ -471,7 +540,7 @@ class _ProgressCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(subject.name,
+          Text(widget.subject.name,
               style: t.titleMedium?.copyWith(fontWeight: FontWeight.w700)),
           const SizedBox(height: 10),
           LayoutBuilder(

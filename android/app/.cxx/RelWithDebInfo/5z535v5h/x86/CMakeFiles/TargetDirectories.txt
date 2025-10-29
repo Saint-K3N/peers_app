@@ -1,0 +1,2 @@
+C:/peers_app/peers_app/android/app/.cxx/RelWithDebInfo/5z535v5h/x86/CMakeFiles/edit_cache.dir
+C:/peers_app/peers_app/android/app/.cxx/RelWithDebInfo/5z535v5h/x86/CMakeFiles/rebuild_cache.dir

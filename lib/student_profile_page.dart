@@ -1203,7 +1203,7 @@ class _PeopleCard extends StatelessWidget {
     required this.emptyText,
   });
 
-  // ✅ NEW: Report functionality added
+  // Report functionality
   Future<void> _reportPerson(BuildContext context, _PersonMini person) async {
     final currentUser = FirebaseAuth.instance.currentUser;
     if (currentUser == null) return;
@@ -1302,7 +1302,7 @@ class _PeopleCard extends StatelessWidget {
           if (people.isEmpty)
             Text(emptyText, style: t.bodySmall)
           else
-          // ✅ UNCHANGED: Original Wrap layout preserved
+          //
             Wrap(
               spacing: 12,
               runSpacing: 12,
@@ -1317,7 +1317,7 @@ class _PeopleCard extends StatelessWidget {
                   ),
                   child: Column(
                     children: [
-                      // ✅ UNCHANGED: Original row with avatar and info
+
                       Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
