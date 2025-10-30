@@ -207,18 +207,78 @@ class _SchoolCounsellorMakeAppointmentPageState
         return;
       }
 
+      // Fetch school counsellor details for the booking
+      final scUserDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(scUser.uid)
+          .get();
+      final scData = scUserDoc.data() ?? {};
+
+      // Extract booker name
+      String bookerName = 'School Counsellor';
+      for (final k in const ['fullName', 'full_name', 'name', 'displayName', 'display_name']) {
+        final v = scData[k];
+        if (v is String && v.trim().isNotEmpty) {
+          bookerName = v.trim();
+          break;
+        }
+      }
+
+      // Extract booker faculty
+      String? bookerFacultyId;
+      final facultyId = scData['facultyId'] ?? scData['faculty_id'] ?? scData['faculty'];
+      if (facultyId is String && facultyId.trim().isNotEmpty) {
+        bookerFacultyId = facultyId.trim();
+      }
+
+      // Fetch helper details
+      final helperDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(helperId)
+          .get();
+      final helperData = helperDoc.data() ?? {};
+
+      String helperName = 'Peer Counsellor';
+      for (final k in const ['fullName', 'full_name', 'name', 'displayName', 'display_name']) {
+        final v = helperData[k];
+        if (v is String && v.trim().isNotEmpty) {
+          helperName = v.trim();
+          break;
+        }
+      }
+
+      String? helperFacultyId;
+      final hFacultyId = helperData['facultyId'] ?? helperData['faculty_id'] ?? helperData['faculty'];
+      if (hFacultyId is String && hFacultyId.trim().isNotEmpty) {
+        helperFacultyId = hFacultyId.trim();
+      }
+
       final now = DateTime.now();
       final location =
       _mode == 'online' ? 'Online (Video Call)' : (_venue ?? 'Campus');
 
       final appt = <String, dynamic>{
-        // Participants
-        'helperId': helperId,                 // peer counsellor
-        'schoolCounsellorId': scUser.uid,     // staff user making the booking
+        // Booker (School Counsellor) details - matching HOP-Peer Tutor schema
+        'bookerId': scUser.uid,
+        'bookerName': bookerName,
+        'bookerRole': 'school_counsellor',
+        if (bookerFacultyId != null) 'bookerFacultyId': bookerFacultyId,
+
+        // Helper (Peer Counsellor) details
+        'helperId': helperId,
+        'helperName': helperName,
+        'helperRole': 'peer_counsellor',
+        if (helperFacultyId != null) 'helperFacultyId': helperFacultyId,
+
+        // Legacy field for backward compatibility
+        'schoolCounsellorId': scUser.uid,
+
         // Times
-        'date': Timestamp.fromDate(DateTime(_date!.year, _date!.month, _date!.day)),
-        'startAt': Timestamp.fromDate(startDt),
-        'endAt': Timestamp.fromDate(endDt),
+        'start': Timestamp.fromDate(startDt),
+        'end': Timestamp.fromDate(endDt),
+        'startAt': Timestamp.fromDate(startDt),  // Keep for backward compatibility
+        'endAt': Timestamp.fromDate(endDt),      // Keep for backward compatibility
+
         // Meta
         'sessionType': _sessionType,
         'mode': _mode,

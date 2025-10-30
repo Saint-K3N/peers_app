@@ -92,33 +92,24 @@ class _PeerCounsellorSchedulePageState extends State<PeerCounsellorSchedulePage>
     DateTime start = (m['startAt'] as Timestamp).toDate();
     DateTime end   = (m['endAt']   as Timestamp).toDate();
 
-    // ❗ Block reschedule if within 24 hours of ORIGINAL start
+    // Block reschedule if within 24 hours of ORIGINAL start
     final now = DateTime.now();
-    // This logic is for the CANCEL action, but since Reschedule policy
-    // is also complex, we will handle the complex logic in the dialog.
-    // For now, keep the policy gate for > 24h away appointments.
-    final isWithin24Hours = start.difference(now).abs() <= const Duration(hours: 24);
-    final isConfirmed = (m['status'] ?? '').toString().toLowerCase() == 'confirmed';
+    final hoursUntilStart = start.difference(now).inHours;
 
-    // For a CONFIRMED appointment <= 24h away, we allow reschedule
-    // but we need a reason and set status to pending_reschedule
-    if (isConfirmed && isWithin24Hours) {
-      // Allow through and handle the reason/status logic in the dialog/post-dialog logic below
-    } else if (start.difference(now) < const Duration(hours: 24)) {
+    if (hoursUntilStart <= 24) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Reschedule not allowed within 24 hours of the appointment.')),
+          const SnackBar(content: Text('Reschedule not allowed within 24 hours of the appointment (Condition 1).')),
         );
       }
       return;
     }
 
-
     DateTime date  = _dayKey(start);
     TimeOfDay startTod = TimeOfDay.fromDateTime(start);
     TimeOfDay endTod   = TimeOfDay.fromDateTime(end);
 
-    final reasonCtrl = TextEditingController(text: isConfirmed && isWithin24Hours ? '' : 'Reschedule needed');
+    final reasonCtrl = TextEditingController();
 
     Future<void> pickDate() async {
       final picked = await showDatePicker(
@@ -138,83 +129,100 @@ class _PeerCounsellorSchedulePageState extends State<PeerCounsellorSchedulePage>
       if (picked != null) setState(() => isStart ? startTod = picked : endTod = picked);
     }
 
-    final ok = await showDialog<bool>(
+    final result = await showDialog<Map<String, dynamic>>(
       context: context,
       builder: (_) => StatefulBuilder(
         builder: (context, setStateDlg) {
           String fmtT(TimeOfDay t) => _fmtTime(t);
           return AlertDialog(
             title: const Text('Reschedule'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                ListTile(
-                  dense: true,
-                  title: const Text('Date'),
-                  subtitle: Text(_fmtDateLong(date)),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.calendar_month_outlined),
-                    onPressed: () async { await pickDate(); setStateDlg((){}); },
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ListTile(
+                    dense: true,
+                    title: const Text('Date'),
+                    subtitle: Text(_fmtDateLong(date)),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.calendar_month_outlined),
+                      onPressed: () async { await pickDate(); setStateDlg((){}); },
+                    ),
                   ),
-                ),
-                Row(
-                  children: [
-                    Expanded(
-                      child: ListTile(
-                        dense: true,
-                        title: const Text('Start'),
-                        subtitle: Text(fmtT(startTod)),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.timer_outlined),
-                          onPressed: () async { await pickTime(true); setStateDlg((){}); },
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ListTile(
+                          dense: true,
+                          title: const Text('Start'),
+                          subtitle: Text(fmtT(startTod)),
+                          trailing: IconButton(
+                            icon: const Icon(Icons.timer_outlined),
+                            onPressed: () async { await pickTime(true); setStateDlg((){}); },
+                          ),
                         ),
                       ),
-                    ),
-                    Expanded(
-                      child: ListTile(
-                        dense: true,
-                        title: const Text('End'),
-                        subtitle: Text(fmtT(endTod)),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.timer_outlined),
-                          onPressed: () async { await pickTime(false); setStateDlg((){}); },
+                      Expanded(
+                        child: ListTile(
+                          dense: true,
+                          title: const Text('End'),
+                          subtitle: Text(fmtT(endTod)),
+                          trailing: IconButton(
+                            icon: const Icon(Icons.timer_outlined),
+                            onPressed: () async { await pickTime(false); setStateDlg((){}); },
+                          ),
                         ),
                       ),
-                    ),
-                  ],
-                ),
-                if (isConfirmed && isWithin24Hours) ...[
+                    ],
+                  ),
                   const SizedBox(height: 12),
-                  Text('Reason for reschedule (max 20 chars):', style: Theme.of(context).textTheme.bodySmall),
                   TextField(
                     controller: reasonCtrl,
+                    decoration: const InputDecoration(
+                      hintText: 'Reason for rescheduling (Max 20 characters)',
+                      border: OutlineInputBorder(),
+                    ),
+                    maxLines: 2,
                     maxLength: 20,
-                    decoration: const InputDecoration(hintText: 'Required', border: OutlineInputBorder()),
                   ),
-                ]
-              ],
+                ],
+              ),
             ),
             actions: [
-              TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Close')),
-              FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Save')),
+              TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
+              FilledButton(
+                onPressed: () {
+                  final reason = reasonCtrl.text.trim();
+                  if (reason.isEmpty) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('A reason is required.')),
+                    );
+                    return;
+                  }
+                  Navigator.pop(context, {
+                    'date': date,
+                    'startTod': startTod,
+                    'endTod': endTod,
+                    'reason': reason,
+                  });
+                },
+                child: const Text('Save'),
+              ),
             ],
           );
         },
       ),
     );
 
-    if (ok != true) return;
+    if (result == null) return;
 
-    final startDt = DateTime(date.year, date.month, date.day, startTod.hour, startTod.minute);
-    final endDt   = DateTime(date.year, date.month, date.day, endTod.hour, endTod.minute);
-    final reason  = reasonCtrl.text.trim();
+    final resultDate = result['date'] as DateTime;
+    final resultStartTod = result['startTod'] as TimeOfDay;
+    final resultEndTod = result['endTod'] as TimeOfDay;
+    final reason = result['reason'] as String;
 
-    if (isConfirmed && isWithin24Hours && reason.isEmpty) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Reschedule reason is required.')));
-      }
-      return;
-    }
+    final startDt = DateTime(resultDate.year, resultDate.month, resultDate.day, resultStartTod.hour, resultStartTod.minute);
+    final endDt   = DateTime(resultDate.year, resultDate.month, resultDate.day, resultEndTod.hour, resultEndTod.minute);
 
     // Prevent rescheduling into the past
     if (!startDt.isAfter(DateTime.now())) {
@@ -242,25 +250,24 @@ class _PeerCounsellorSchedulePageState extends State<PeerCounsellorSchedulePage>
       return;
     }
 
-    // Set status to pending_reschedule if cancelled/rescheduled from inside 24h window
-    final status = (isConfirmed && isWithin24Hours) ? 'pending_reschedule' : 'confirmed';
+    // Determine if it's a Student or School Counsellor appointment
+    final studentId = (m['studentId'] ?? '').toString();
+    final schoolCounsellorId = (m['schoolCounsellorId'] ?? '').toString();
+    final createdByRole = schoolCounsellorId.isNotEmpty ? 'school_counsellor' : 'student';
 
-    final updates = {
-      'startAt': Timestamp.fromDate(startDt),
-      'endAt': Timestamp.fromDate(endDt),
+    // IMPORTANT: Keep original startAt/endAt, store proposed times and wait for confirmation
+    await FirebaseFirestore.instance.collection('appointments').doc(apptId).update({
+      'proposedStartAt': Timestamp.fromDate(startDt),
+      'proposedEndAt': Timestamp.fromDate(endDt),
+      'rescheduleReasonPeer': reason,
+      'status': 'pending_reschedule_peer',
       'updatedAt': FieldValue.serverTimestamp(),
-    };
-    if (status == 'pending_reschedule') {
-      updates['status'] = status;
-      updates['rescheduleReason'] = reason;
-      updates['rescheduledBy'] = 'counsellor';
-    }
-
-    await FirebaseFirestore.instance.collection('appointments').doc(apptId).update(updates);
+    });
 
     if (mounted) {
+      final waitingFor = createdByRole == 'school_counsellor' ? 'School Counsellor' : 'Student';
       ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(status == 'pending_reschedule' ? 'Rescheduled. Student needs to confirm.' : 'Rescheduled.'))
+          SnackBar(content: Text('Reschedule proposed. Waiting for $waitingFor confirmation.'))
       );
     }
   }
@@ -966,6 +973,19 @@ class _TaskCard extends StatelessWidget {
           chipFg = const Color(0xFF8A6D3B);
           outline = const Color(0xFF8A6D3B);
           break;
+        case 'pending_reschedule_student':
+        case 'pending_reschedule_sc':
+          chipLabel = 'Reschedule Confirm?';
+          chipBg = const Color(0xFFFFCC80);
+          chipFg = const Color(0xFFEF6C00);
+          outline = const Color(0xFFEF6C00);
+          break;
+        case 'pending_reschedule_peer':
+          chipLabel = 'Reschedule Pending';
+          chipBg = const Color(0xFFFFF3CD);
+          chipFg = const Color(0xFF8A6D3B);
+          outline = const Color(0xFF8A6D3B);
+          break;
         default:
           chipLabel = 'Pending';
           chipBg = const Color(0xFFEDEEF1);
@@ -1082,6 +1102,10 @@ class _TaskCard extends StatelessWidget {
                     child: Wrap(
                       spacing: 8,
                       children: [
+                        // Review Reschedule button for when Student or SC proposes reschedule
+                        if ((item.status == 'pending_reschedule_student' || item.status == 'pending_reschedule_sc') && canConfirm)
+                          _SmallBtn(label: 'Review Reschedule', color: const Color(0xFFEF6C00), onTap: _openDetails),
+
                         if (item.status == 'pending' && canConfirm)
                           _SmallBtn(label: 'Confirm', color: const Color(0xFF2E7D32), onTap: () async {
                             if (!canConfirm) {
@@ -1094,7 +1118,7 @@ class _TaskCard extends StatelessWidget {
                           }),
 
                         if ((item.status == 'pending' || item.status == 'confirmed') && canModify)
-                          _SmallBtn(label: 'Cancel', color: const Color(0xFFEF6C00), onTap: () async {
+                          _SmallBtn(label: 'Cancel', color: const Color(0xFFD32F2F), onTap: () async {
                             if (!canModify) {
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(content: Text('Cancel not allowed within 24 hours of the appointment.')),
@@ -1104,8 +1128,8 @@ class _TaskCard extends StatelessWidget {
                             await onCancel(item.id);
                           }),
 
-                        if (item.status != 'cancelled' && canModify)
-                          _SmallBtn(label: 'Reschedule', color: const Color(0xFF1565C0), onTap: () async {
+                        if (item.status != 'cancelled' && item.status != 'pending_reschedule_student' && item.status != 'pending_reschedule_sc' && item.status != 'pending_reschedule_peer' && canModify)
+                          _SmallBtn(label: 'Reschedule', color: const Color(0xFF1976D2), onTap: () async {
                             if (!canModify) {
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(content: Text('Reschedule not allowed within 24 hours of the appointment.')),

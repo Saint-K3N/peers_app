@@ -651,7 +651,12 @@ class _CounsellorScheduleTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final m = appDoc.data();
 
-    final studentId = (m['studentId'] ?? '').toString();
+    // Handle both student and school counsellor appointments
+    final createdByRole = (m['createdByRole'] ?? '').toString().toLowerCase();
+    final bookerId = createdByRole == 'school_counsellor'
+        ? (m['schoolCounsellorId'] ?? m['bookerId'] ?? '').toString()
+        : (m['studentId'] ?? m['bookerId'] ?? '').toString();
+
     final status = (m['status'] ?? 'pending').toString().toLowerCase().trim();
 
     final startTs = m['startAt'] as Timestamp?;
@@ -659,7 +664,7 @@ class _CounsellorScheduleTile extends StatelessWidget {
     final start   = startTs?.toDate();
     final end     = endTs?.toDate();
 
-    final isReschedulePendingHelper = status == 'pending_reschedule_student';
+    final isReschedulePendingHelper = status == 'pending_reschedule_student' || status == 'pending_reschedule_sc';
 
     final displayStart = start;
     final displayEnd   = end;
@@ -688,6 +693,7 @@ class _CounsellorScheduleTile extends StatelessWidget {
       'completed' => ('Completed', const Color(0xFFC8F2D2), const Color(0xFF2E7D32)),
       'missed'    => ('Missed',    const Color(0xFFFFF3CD), const Color(0xFF8A6D3B)),
       'pending_reschedule_student' => ('Reschedule Confirm?', const Color(0xFFFFCC80), const Color(0xFFEF6C00)),
+      'pending_reschedule_sc' => ('Reschedule Confirm?', const Color(0xFFFFCC80), const Color(0xFFEF6C00)),
       _           => ('Pending',   const Color(0xFFEDEEF1), const Color(0xFF6B7280)),
     };
 
@@ -708,26 +714,29 @@ class _CounsellorScheduleTile extends StatelessWidget {
 
 
     return FutureBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      future: FirebaseFirestore.instance.collection('users').doc(studentId).get(),
+      future: FirebaseFirestore.instance.collection('users').doc(bookerId).get(),
       builder: (context, snap) {
         final um = snap.data?.data() ?? const {};
-        final studentName = _pickStudentName(um);
+        final bookerName = _pickStudentName(um);
         final rawPhotoUrl = um['photoUrl'] ?? um['avatarUrl'] ?? '';
         final photoUrl = (rawPhotoUrl is String) ? rawPhotoUrl.trim() : '';
-        final title = 'Counselling with $studentName';
+        final bookerRole = createdByRole == 'school_counsellor' ? 'School Counsellor' : 'Student';
+        final title = createdByRole == 'school_counsellor'
+            ? 'Meeting with $bookerName'
+            : 'Counselling with $bookerName';
 
         return Container(
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(
-              color: isConfirmed
-                  ? const Color(0xFF2F8D46)
-                  : (status == 'cancelled' ? const Color(0xFFC62828) : Colors.transparent),
-              width: isConfirmed || status == 'cancelled' ? 2 : 0.5,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: isConfirmed
+                    ? const Color(0xFF2F8D46)
+                    : (status == 'cancelled' ? const Color(0xFFC62828) : Colors.transparent),
+                width: isConfirmed || status == 'cancelled' ? 2 : 0.5,
+              ),
+              boxShadow: [BoxShadow(color: Colors.black.withOpacity(.06), blurRadius: 10, offset: const Offset(0, 6))],
             ),
-            boxShadow: [BoxShadow(color: Colors.black.withOpacity(.06), blurRadius: 10, offset: const Offset(0, 6))],
-          ),
             child: InkWell(
                 onTap: () {
                   Navigator.pushNamed(
@@ -742,92 +751,92 @@ class _CounsellorScheduleTile extends StatelessWidget {
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-              // Left avatar (student)
-              CircleAvatar(
-                radius: 22,
-                backgroundColor: const Color(0xFFEEEEEE),
-                backgroundImage: (photoUrl.isNotEmpty) ? NetworkImage(photoUrl) : null,
-                child: (photoUrl.isEmpty) ? const Icon(Icons.person, color: Colors.grey) : null,
-              ),
-              const SizedBox(width: 12),
-              // Details
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(child: Text(title, style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700))),
-                        _StatusChip(label: chipLabel, bg: chipBg, fg: chipFg),
-                      ],
-                    ),
-                    const SizedBox(height: 6),
-                    Text('Date: $date', style: Theme.of(context).textTheme.bodySmall),
-                    Text('Time: $time', style: Theme.of(context).textTheme.bodySmall),
-                    Text('Venue: $venue', style: Theme.of(context).textTheme.bodySmall),
-                    const SizedBox(height: 8),
-
-                    // Actions row with policy gates
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
-                        // Confirm (initial booking) only before start & when pending
-                        if (isPending && canConfirmOriginal)
-                          Padding(
-                            padding: const EdgeInsets.only(right: 8),
-                            child: _SmallButton(
-                              label: 'Confirm',
-                              color: const Color(0xFF2E7D32),
-                              onPressed: () => _updateStatus(context, appDoc.id, 'confirmed'),
+                      // Left avatar (student)
+                      CircleAvatar(
+                        radius: 22,
+                        backgroundColor: const Color(0xFFEEEEEE),
+                        backgroundImage: (photoUrl.isNotEmpty) ? NetworkImage(photoUrl) : null,
+                        child: (photoUrl.isEmpty) ? const Icon(Icons.person, color: Colors.grey) : null,
+                      ),
+                      const SizedBox(width: 12),
+                      // Details
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(child: Text(title, style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700))),
+                                _StatusChip(label: chipLabel, bg: chipBg, fg: chipFg),
+                              ],
                             ),
-                          ),
+                            const SizedBox(height: 6),
+                            Text('Date: $date', style: Theme.of(context).textTheme.bodySmall),
+                            Text('Time: $time', style: Theme.of(context).textTheme.bodySmall),
+                            Text('Venue: $venue', style: Theme.of(context).textTheme.bodySmall),
+                            const SizedBox(height: 8),
 
-                        // Action: Reschedule Pending Helper (Student proposed)
-                        // SCENARIO 1: Must redirect to Booking Info page to handle the "Accept" action.
-                        if (isReschedulePendingHelper && canConfirmOriginal)
-                          Padding(
-                            padding: const EdgeInsets.only(right: 8),
-                            child: _SmallButton(
-                              label: 'Review Reschedule',
-                              color: const Color(0xFFEF6C00),
-                              onPressed: () => Navigator.pushNamed(context, '/counsellor/booking', arguments: {'appointmentId': appDoc.id}),
+                            // Actions row with policy gates
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.end,
+                              children: [
+                                // Confirm (initial booking) only before start & when pending
+                                if (isPending && canConfirmOriginal)
+                                  Padding(
+                                    padding: const EdgeInsets.only(right: 8),
+                                    child: _SmallButton(
+                                      label: 'Confirm',
+                                      color: const Color(0xFF2E7D32),
+                                      onPressed: () => _updateStatus(context, appDoc.id, 'confirmed'),
+                                    ),
+                                  ),
+
+                                // Action: Reschedule Pending Helper (Student proposed)
+                                // SCENARIO 1: Must redirect to Booking Info page to handle the "Accept" action.
+                                if (isReschedulePendingHelper && canConfirmOriginal)
+                                  Padding(
+                                    padding: const EdgeInsets.only(right: 8),
+                                    child: _SmallButton(
+                                      label: 'Review Reschedule',
+                                      color: const Color(0xFFEF6C00),
+                                      onPressed: () => Navigator.pushNamed(context, '/counsellor/booking', arguments: {'appointmentId': appDoc.id}),
+                                    ),
+                                  ),
+
+
+                                // Cancel: available if pending or confirmed > 24h
+                                if (canPeerCancel)
+                                  Padding(
+                                    padding: const EdgeInsets.only(right: 8),
+                                    child: _SmallButton(
+                                      label: 'Cancel',
+                                      color: const Color(0xFFEF6C00),
+                                      onPressed: () => _confirmCancel(context, m, appDoc.id),
+                                    ),
+                                  ),
+
+                                // After start: outcomes (if not already terminal)
+                                if (!isTerminal && canOutcome) ...[
+                                  const SizedBox(width: 8),
+                                  _SmallButton(
+                                    label: 'Completed',
+                                    color: const Color(0xFF2E7D32),
+                                    onPressed: () => _markCompleted(context, appDoc.id, start!),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  _SmallButton(
+                                    label: 'Missed',
+                                    color: const Color(0xFF8A6D3B),
+                                    onPressed: () => _markMissed(context, appDoc.id, start!),
+                                  ),
+                                ],
+                              ],
                             ),
-                          ),
-
-
-                        // Cancel: available if pending or confirmed > 24h
-                        if (canPeerCancel)
-                          Padding(
-                            padding: const EdgeInsets.only(right: 8),
-                            child: _SmallButton(
-                              label: 'Cancel',
-                              color: const Color(0xFFEF6C00),
-                              onPressed: () => _confirmCancel(context, m, appDoc.id),
-                            ),
-                          ),
-
-                        // After start: outcomes (if not already terminal)
-                        if (!isTerminal && canOutcome) ...[
-                          const SizedBox(width: 8),
-                          _SmallButton(
-                            label: 'Held',
-                            color: const Color(0xFF2E7D32),
-                            onPressed: () => _markCompleted(context, appDoc.id, start!),
-                          ),
-                          const SizedBox(width: 8),
-                          _SmallButton(
-                            label: 'Missed',
-                            color: const Color(0xFF8A6D3B),
-                            onPressed: () => _markMissed(context, appDoc.id, start!),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
                 )
             )
         );

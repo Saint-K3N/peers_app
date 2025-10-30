@@ -229,8 +229,8 @@ class _StudentBookingInfoPageState extends State<StudentBookingInfoPage> {
       case 'confirmed': return 'Confirmed';
       case 'completed': return 'Completed';
       case 'cancelled': return 'Cancelled';
-      case 'pending_reschedule_peer': return 'Awaiting Your Confirmation';
-      case 'pending_reschedule_student': return 'Awaiting Helper Review';
+      case 'pending_reschedule_peer': return 'Reschedule (Peer)';
+      case 'pending_reschedule_student': return 'Awaiting Review';
       default: return 'Pending';
     }
   }

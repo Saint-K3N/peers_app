@@ -739,11 +739,21 @@ class _PastSessionsCardCounsellor extends StatelessWidget {
 
           final all = snap.data?.docs ?? const [];
           final docs = all
-              .where((d) => ((d.data()['status'] ?? '') as Object?)
-              .toString()
-              .toLowerCase()
-              .trim() ==
-              'completed')
+              .where((d) {
+            final data = d.data();
+            final status = ((data['status'] ?? '') as Object?)
+                .toString()
+                .toLowerCase()
+                .trim();
+            final createdByRole = (data['createdByRole'] ?? '').toString().toLowerCase().trim();
+            final bookerRole = (data['bookerRole'] ?? '').toString().toLowerCase().trim();
+            // Only show completed sessions created by students (exclude school_counsellor and hop)
+            return status == 'completed' &&
+                createdByRole != 'school_counsellor' &&
+                createdByRole != 'hop' &&
+                bookerRole != 'school_counsellor' &&
+                bookerRole != 'hop';
+          })
               .toList()
             ..sort((a, b) {
               int at = 0, bt = 0;
@@ -819,7 +829,12 @@ class _PastCounsellorSessionRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final m = appDoc.data();
-    final studentId = (m['studentId'] ?? '').toString();
+    // Handle both student and school counsellor appointments
+    final createdByRole = (m['createdByRole'] ?? '').toString().toLowerCase();
+    final bookerId = createdByRole == 'school_counsellor'
+        ? (m['schoolCounsellorId'] ?? m['bookerId'] ?? '').toString()
+        : (m['studentId'] ?? m['bookerId'] ?? '').toString();
+
     final startTs = m['startAt'] as Timestamp?;
     final endTs = m['endAt'] as Timestamp?;
     final location = (m['location'] ?? m['venue'] ?? 'Campus').toString();
@@ -833,16 +848,16 @@ class _PastCounsellorSessionRow extends StatelessWidget {
 
     return FutureBuilder(
       future:
-      FirebaseFirestore.instance.collection('users').doc(studentId).get(),
+      FirebaseFirestore.instance.collection('users').doc(bookerId).get(),
       builder: (context, snap) {
-        String studentName = 'Student';
+        String bookerName = createdByRole == 'school_counsellor' ? 'School Counsellor' : 'Student';
         String? photoUrl;
 
         if (snap.hasData) {
           final userMap =
               (snap.data as DocumentSnapshot<Map<String, dynamic>>?)?.data() ??
                   {};
-          studentName =
+          bookerName =
               _pickString(userMap, [
                 'fullName',
                 'full_name',
@@ -850,7 +865,7 @@ class _PastCounsellorSessionRow extends StatelessWidget {
                 'displayName',
                 'display_name'
               ]) ??
-                  studentName;
+                  bookerName;
 
           for (final key in ['photoUrl', 'photoURL', 'avatarUrl', 'avatar']) {
             final v = userMap[key];
@@ -873,7 +888,9 @@ class _PastCounsellorSessionRow extends StatelessWidget {
         }
 
         final icon = Icons.person_outline;
-        final title = 'Counselling with $studentName';
+        final title = createdByRole == 'school_counsellor'
+            ? 'Meeting with $bookerName'
+            : 'Counselling with $bookerName';
 
         return Container(
           padding: const EdgeInsets.all(10),
@@ -967,7 +984,7 @@ class _PeersYouWorkedWith extends StatelessWidget {
   const _PeersYouWorkedWith({required this.helperId});
 
   Future<List<_PeerMini>> _loadPeers() async {
-    // ✅ UNCHANGED: Only fetch COMPLETED appointments
+    // ✅ Fetch COMPLETED appointments only with students (exclude School Counsellor)
     final appts = await FirebaseFirestore.instance
         .collection('appointments')
         .where('helperId', isEqualTo: helperId)
@@ -977,9 +994,17 @@ class _PeersYouWorkedWith extends StatelessWidget {
     final completedByStudent =
     <String, List<QueryDocumentSnapshot<Map<String, dynamic>>>>{};
 
-    // Group completed sessions by peer/student
+    // Group completed sessions by student (exclude School Counsellor and HOP appointments)
     for (final d in appts.docs) {
-      final s = (d['studentId'] ?? '').toString();
+      final data = d.data();
+      final createdByRole = (data['createdByRole'] ?? '').toString().toLowerCase().trim();
+      final bookerRole = (data['bookerRole'] ?? '').toString().toLowerCase().trim();
+
+      // Skip School Counsellor and HOP appointments - only include students
+      if (createdByRole == 'school_counsellor' || createdByRole == 'hop') continue;
+      if (bookerRole == 'school_counsellor' || bookerRole == 'hop') continue;
+
+      final s = (data['studentId'] ?? data['bookerId'] ?? '').toString();
       if (s.isEmpty) continue;
       (completedByStudent[s] ??= []).add(d);
     }

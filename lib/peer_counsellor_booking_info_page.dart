@@ -54,9 +54,11 @@ class _PeerCounsellorBookingInfoBodyState
       case 'missed':
         return 'Missed';
       case 'pending_reschedule_peer':
-        return 'Reschedule Pending (You)';
+        return 'Reschedule (You)';
       case 'pending_reschedule_student':
-        return 'Reschedule Pending (Student)';
+        return 'Reschedule (Student)';
+      case 'pending_reschedule_sc':
+        return 'Reschedule (SC)';
       default:
         return 'Pending';
     }
@@ -74,6 +76,7 @@ class _PeerCounsellorBookingInfoBodyState
         return (const Color(0xFFFFF3CD), const Color(0xFF8A6D3B));
       case 'pending_reschedule_peer':
       case 'pending_reschedule_student':
+      case 'pending_reschedule_sc':
         return (const Color(0xFFFFF3CD), const Color(0xFF8A6D3B));
       default:
         return (const Color(0xFFEDEEF1), const Color(0xFF6B7280));
@@ -283,8 +286,7 @@ class _PeerCounsellorBookingInfoBodyState
   }
 
   // Peer Reschedule function (initiates a change request to the student)
-  Future<void> _rescheduleWithReason(String apptId, DateTime currentStart,
-      DateTime currentEnd) async {
+  Future<void> _rescheduleWithReason(String apptId, DateTime currentStart, DateTime currentEnd, String createdByRole) async {
     // Condition 1 & 2: Reschedule not allowed within 24 hours.
     final hoursUntilStart = currentStart
         .difference(DateTime.now())
@@ -335,8 +337,8 @@ class _PeerCounsellorBookingInfoBodyState
       });
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text(
-            'Reschedule proposed. Waiting for student confirmation.')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
+            'Reschedule proposed. Waiting for ${createdByRole == 'school_counsellor' ? 'School Counsellor' : 'Student'} confirmation.')));
       }
     } catch (e) {
       if (mounted) {
@@ -396,6 +398,136 @@ class _PeerCounsellorBookingInfoBodyState
     }
   }
 
+  // Reject Student Reschedule
+  Future<void> _rejectStudentReschedule(String apptId) async {
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (_) => const _ReasonDialog(
+        title: 'Reject Reschedule',
+        maxChars: 20,
+        hint: 'Reason for rejection',
+      ),
+    );
+
+    if (reason == null || !mounted) return;
+
+    try {
+      await FirebaseFirestore.instance.collection('appointments').doc(apptId).update({
+        'status': 'confirmed',
+        'proposedStartAt': FieldValue.delete(),
+        'proposedEndAt': FieldValue.delete(),
+        'rescheduleReasonPeer': FieldValue.delete(),
+        'rescheduleReasonStudent': FieldValue.delete(),
+        'rejectionReason': reason,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Reschedule rejected. Original time retained.')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to reject: $e')),
+        );
+      }
+    }
+  }
+
+  // NEW: Accept Reschedule initiated by School Counsellor
+  Future<void> _acceptSCReschedule(String apptId,
+      Map<String, dynamic> m) async {
+    final helperId = (m['helperId'] ?? '').toString();
+    final newStartTs = m['proposedStartAt'] as Timestamp?;
+    final newEndTs = m['proposedEndAt'] as Timestamp?;
+
+    if (newStartTs == null || newEndTs == null) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Reschedule data is incomplete.')));
+      return;
+    }
+
+    final newStartDt = newStartTs.toDate();
+    final newEndDt = newEndTs.toDate();
+
+    if (await _hasOverlap(helperId: helperId,
+        startDt: newStartDt,
+        endDt: newEndDt,
+        excludeId: apptId)) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text(
+              'Proposed time conflicts with your existing schedule.')));
+      return;
+    }
+
+    try {
+      // Accept: Move proposed times to actual times, clear proposed fields
+      await FirebaseFirestore.instance
+          .collection('appointments')
+          .doc(apptId)
+          .update({
+        'status': 'confirmed',
+        'startAt': newStartTs,
+        'endAt': newEndTs,
+        'proposedStartAt': FieldValue.delete(),
+        'proposedEndAt': FieldValue.delete(),
+        'rescheduleReasonPeer': FieldValue.delete(),
+        'rescheduleReasonStudent': FieldValue.delete(),
+        'rescheduleReasonSC': FieldValue.delete(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Reschedule confirmed and appointment updated.')));
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Confirmation failed: $e')));
+    }
+  }
+
+  // NEW: Cancel/Reject Reschedule Proposal
+  Future<void> _cancelRescheduleProposal(String apptId, Map<String, dynamic> m) async {
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (_) => const _ReasonDialog(
+        title: 'Cancel Reschedule',
+        maxChars: 20,
+        hint: 'Reason for cancelling reschedule',
+      ),
+    );
+
+    if (reason == null || !mounted) return;
+
+    try {
+      // Revert to confirmed status, keep original times, delete proposed fields
+      await FirebaseFirestore.instance
+          .collection('appointments')
+          .doc(apptId)
+          .update({
+        'status': 'confirmed',
+        'proposedStartAt': FieldValue.delete(),
+        'proposedEndAt': FieldValue.delete(),
+        'rescheduleReasonPeer': FieldValue.delete(),
+        'rescheduleReasonStudent': FieldValue.delete(),
+        'rescheduleReasonSC': FieldValue.delete(),
+        'rescheduleRejectionReason': reason,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Reschedule proposal cancelled.')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to cancel reschedule: $e')),
+        );
+      }
+    }
+  }
 
   Future<bool> _hasOverlap(
       {required String helperId, required DateTime startDt, required DateTime endDt, String? excludeId}) async {
@@ -858,11 +990,26 @@ class _PeerCounsellorBookingInfoBodyState
                                                 backgroundColor: const Color(
                                                     0xFF2E7D32)),
                                             onPressed: () =>
-                                                _acceptStudentReschedule(
+                                                _acceptSCReschedule(
                                                     widget.appointmentId, m),
-                                            // Same logic
                                             child: const Text(
-                                                'Confirm'),
+                                                "Confirm"),
+                                          ),
+
+                                        // Action: Cancel Reschedule Proposal (Student or SC)
+                                        if ((isPendingStudentReschedule || isPendingSCReschedule) && start != null)
+                                          FilledButton(
+                                            style: FilledButton.styleFrom(
+                                                backgroundColor: Colors.red),
+                                            onPressed: () {
+                                              if (isPendingStudentReschedule) {
+                                                _rejectStudentReschedule(widget.appointmentId);
+                                              } else {
+                                                _cancelRescheduleProposal(
+                                                    widget.appointmentId, m);
+                                              }
+                                            },
+                                            child: const Text("Decline"),
                                           ),
 
                                         // Action: Confirm (initial booking)
@@ -881,10 +1028,12 @@ class _PeerCounsellorBookingInfoBodyState
                                         if (canPeerReschedule &&
                                             start != null && end != null)
                                           FilledButton.tonal(
-                                            onPressed: () =>
-                                                _rescheduleWithReason(
-                                                    widget.appointmentId, start,
-                                                    end),
+                                            onPressed: () {
+                                              final createdByRole = schoolCounsellorId.isNotEmpty ? 'school_counsellor' : 'student';
+                                              _rescheduleWithReason(
+                                                  widget.appointmentId, start,
+                                                  end, createdByRole);
+                                            },
                                             child: const Text('Reschedule'),
                                           ),
 

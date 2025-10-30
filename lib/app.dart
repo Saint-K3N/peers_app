@@ -116,9 +116,9 @@ class MyApp extends StatelessWidget {
         '/hop/student-report': (_) => const HopStudentReportPage(),
         '/hop/make-appointment': (_) => const HopMakeAppointmentPage(),
         '/hop/review/view': (context) {
-            final appId = ModalRoute.of(context)!.settings.arguments as String;
-            return HopReviewApplicationDetailPage(appId: appId);
-       },
+          final appId = ModalRoute.of(context)!.settings.arguments as String;
+          return HopReviewApplicationDetailPage(appId: appId);
+        },
         // '/hop/my-tutors': (_) => const HopMyTutorsPage(),
         '/hop/review-applications': (_) => const HopReviewApplicationsPage(),
 

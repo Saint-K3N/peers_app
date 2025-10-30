@@ -110,8 +110,9 @@ class _HopSchedulingPageState extends State<HopSchedulingPage> {
       final status = (m['status'] ?? '').toString().toLowerCase().trim();
       if (status != 'pending' && status != 'confirmed' && !status.startsWith('pending_reschedule')) continue;
 
-      final tsStart = m['startAt'];
-      final tsEnd   = m['endAt'];
+      // Check both Student appointment fields (startAt/endAt) and HOP appointment fields (start/end)
+      final tsStart = m['startAt'] ?? m['start'];
+      final tsEnd   = m['endAt'] ?? m['end'];
       if (tsStart is! Timestamp || tsEnd is! Timestamp) continue;
       final existingStart = tsStart.toDate();
       final existingEnd   = tsEnd.toDate();
@@ -133,8 +134,8 @@ class _HopSchedulingPageState extends State<HopSchedulingPage> {
   // HOP Reschedule: propose new time
   Future<void> _reschedule(BuildContext context, String apptId, Map<String,dynamic> m) async {
     final helperId = (m['helperId'] ?? m['tutorId'] ?? '').toString();
-    final origStart = (m['startAt'] as Timestamp).toDate();
-    final origEnd   = (m['endAt']   as Timestamp).toDate();
+    final origStart = (m['start'] as Timestamp).toDate();
+    final origEnd   = (m['end']   as Timestamp).toDate();
     final status = (m['status'] ?? '').toString().toLowerCase().trim();
 
     // CONDITION 1: If <= 24h, cannot reschedule at all
@@ -332,7 +333,7 @@ class _HopSchedulingPageState extends State<HopSchedulingPage> {
 
   // HOP Cancel
   Future<void> _cancelAppointment(String apptId, Map<String, dynamic> m) async {
-    final startTs = m['startAt'] as Timestamp?;
+    final startTs = m['start'] as Timestamp?;
     if (startTs == null) return;
 
     final start = startTs.toDate();
@@ -556,7 +557,7 @@ class _CalendarArea extends StatelessWidget {
             }
             for (final d in (appsSnap.data?.docs ?? const [])) {
               final m = d.data();
-              final ts = m['startAt'];
+              final ts = m['startAt'] ?? m['start'];
               if (ts is Timestamp) add(ts.toDate());
             }
             for (final d in (evSnap.data?.docs ?? const [])) {
@@ -694,8 +695,8 @@ class _DayTasksList extends StatelessWidget {
 
             for (final d in (appsSnap.data?.docs ?? const [])) {
               final m = d.data();
-              final stTs = m['startAt'];
-              final enTs = m['endAt'];
+              final stTs = m['startAt'] ?? m['start'];
+              final enTs = m['endAt'] ?? m['end'];
               if (stTs is! Timestamp || enTs is! Timestamp) continue;
               final st = stTs.toDate();
               if (_key(st) != _key(selectedDay)) continue;
@@ -777,8 +778,8 @@ class _TaskItem {
   });
 
   factory _TaskItem.appointment(String id, Map<String,dynamic> m) {
-    final st = (m['startAt'] as Timestamp).toDate();
-    final en = (m['endAt'] as Timestamp).toDate();
+    final st = ((m['startAt'] ?? m['start']) as Timestamp).toDate();
+    final en = ((m['endAt'] ?? m['end']) as Timestamp).toDate();
     final status = (m['status'] ?? 'pending').toString().toLowerCase().trim();
     final mode = (m['mode'] ?? '').toString().toLowerCase();
     final venue = () {

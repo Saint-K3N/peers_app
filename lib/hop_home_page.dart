@@ -374,8 +374,8 @@ class _TodayScheduleListHop extends StatelessWidget {
     final stream = FirebaseFirestore.instance
         .collection('appointments')
         .where('bookerId', isEqualTo: hopUid)
-        .where('startAt', isGreaterThanOrEqualTo: Timestamp.fromDate(sod))
-        .where('startAt', isLessThanOrEqualTo: Timestamp.fromDate(eod))
+        .where('start', isGreaterThanOrEqualTo: Timestamp.fromDate(sod))
+        .where('start', isLessThanOrEqualTo: Timestamp.fromDate(eod))
         .snapshots();
 
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
@@ -401,8 +401,8 @@ class _TodayScheduleListHop extends StatelessWidget {
             .toList()
           ..sort((a, b) {
             int aMs = 0, bMs = 0;
-            final aTs = a.data()['startAt'];
-            final bTs = b.data()['startAt'];
+            final aTs = a.data()['start'];
+            final bTs = b.data()['start'];
             if (aTs is Timestamp) aMs = aTs.toDate().millisecondsSinceEpoch;
             if (bTs is Timestamp) bMs = bTs.toDate().millisecondsSinceEpoch;
             return aMs.compareTo(bMs);
@@ -526,7 +526,7 @@ class _HopScheduleTile extends StatelessWidget {
   }
 
   Future<void> _confirmCancel(BuildContext context, Map<String, dynamic> m) async {
-    final startTs = m['startAt'] as Timestamp?;
+    final startTs = m['start'] as Timestamp?;
     final start = startTs?.toDate();
 
     if (start == null) return;
@@ -577,8 +577,8 @@ class _HopScheduleTile extends StatelessWidget {
 
     await FirebaseFirestore.instance.collection('appointments').doc(appDoc.id).set({
       'status': 'confirmed',
-      'startAt': propStart,
-      'endAt': propEnd,
+      'start': propStart,
+      'end': propEnd,
       'proposedStartAt': FieldValue.delete(),
       'proposedEndAt': FieldValue.delete(),
       'rescheduleReasonHop': FieldValue.delete(),
@@ -601,8 +601,8 @@ class _HopScheduleTile extends StatelessWidget {
     final helperId = (m['helperId'] ?? '').toString();
     final status = (m['status'] ?? 'pending').toString().toLowerCase().trim();
 
-    final startTs = m['startAt'] as Timestamp?;
-    final endTs   = m['endAt'] as Timestamp?;
+    final startTs = m['start'] as Timestamp?;
+    final endTs   = m['end'] as Timestamp?;
     final start   = startTs?.toDate();
     final end     = endTs?.toDate();
 

@@ -445,7 +445,7 @@ class _TodayScheduleListSC extends StatelessWidget {
               final m = d.data();
               final helperId = (m['helperId'] ?? '').toString();
               final status = (m['status'] ?? '').toString().toLowerCase().trim();
-              final active = status == 'pending' || status == 'confirmed';
+              final active = status == 'pending' || status == 'confirmed' || status == 'pending_reschedule_peer';
               return counsellorIds.contains(helperId) && active;
             })
                 .toList()
@@ -499,6 +499,9 @@ class _SCScheduleTile extends StatelessWidget {
       case 'confirmed':
         return (const Color(0xFF2F8D46), const Color(0xFF2F8D46), 'Confirmed',
         const Color(0xFFC8F2D2), const Color(0xFF2E7D32));
+      case 'pending_reschedule_peer':
+        return (const Color(0xFFEF6C00), const Color(0xFFEF6C00), 'Reschedule Confirm?',
+        const Color(0xFFFFCC80), const Color(0xFFEF6C00));
       case 'pending':
       default:
         return (const Color(0xFF6B7280), const Color(0xFF6B7280), 'Pending',
@@ -655,22 +658,48 @@ class _SCScheduleTile extends StatelessWidget {
                         Text('Time: $time', style: t.bodySmall),
                         Text('Venue: $venue', style: t.bodySmall),
                         const SizedBox(height: 8),
-                        if (canCancel)
-                          Align(
-                            alignment: Alignment.centerRight,
-                            child: SizedBox(
-                              height: 34,
-                              child: FilledButton(
-                                style: FilledButton.styleFrom(
-                                  backgroundColor: const Color(0xFFF39C12),
-                                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: Wrap(
+                            spacing: 8,
+                            children: [
+                              // Review Reschedule button for when Peer Counsellor proposes reschedule
+                              if (status == 'pending_reschedule_peer')
+                                SizedBox(
+                                  height: 34,
+                                  child: FilledButton(
+                                    style: FilledButton.styleFrom(
+                                      backgroundColor: const Color(0xFFEF6C00),
+                                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                    ),
+                                    onPressed: () {
+                                      Navigator.pushNamed(
+                                        context,
+                                        '/school-counsellor/booking',
+                                        arguments: {'appointmentId': appDoc.id},
+                                      );
+                                    },
+                                    child: const Text('Review Reschedule', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                                  ),
                                 ),
-                                onPressed: () => _confirmCancel(context),
-                                child: const Text('Cancel', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
-                              ),
-                            ),
+                              // Cancel button (only if not pending_reschedule_peer)
+                              if (canCancel && status != 'pending_reschedule_peer')
+                                SizedBox(
+                                  height: 34,
+                                  child: FilledButton(
+                                    style: FilledButton.styleFrom(
+                                      backgroundColor: const Color(0xFFF39C12),
+                                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                    ),
+                                    onPressed: () => _confirmCancel(context),
+                                    child: const Text('Cancel', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                                  ),
+                                ),
+                            ],
                           ),
+                        ),
                       ],
                     ),
                   ),

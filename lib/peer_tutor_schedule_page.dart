@@ -116,8 +116,9 @@ class _PeerTutorSchedulePageState extends State<PeerTutorSchedulePage> {
       List<DateTime?> checkStarts = [];
       List<DateTime?> checkEnds = [];
 
-      final tsStart = m['startAt'];
-      final tsEnd   = m['endAt'];
+      // FIX: Check both timestamp field names
+      final tsStart = m['startAt'] ?? m['start'];
+      final tsEnd = m['endAt'] ?? m['end'];
       if (tsStart is Timestamp && tsEnd is Timestamp) {
         checkStarts.add(tsStart.toDate());
         checkEnds.add(tsEnd.toDate());
@@ -132,7 +133,7 @@ class _PeerTutorSchedulePageState extends State<PeerTutorSchedulePage> {
 
       for (int i = 0; i < checkStarts.length; i++) {
         final existingStart = checkStarts[i];
-        final existingEnd   = checkEnds[i];
+        final existingEnd = checkEnds[i];
         if (existingStart == null || existingEnd == null) continue;
 
         final overlaps = existingStart.isBefore(endDt) && existingEnd.isAfter(startDt);
@@ -145,8 +146,9 @@ class _PeerTutorSchedulePageState extends State<PeerTutorSchedulePage> {
   Future<void> _reschedule(BuildContext context, String apptId, Map<String,dynamic> m) async {
     final helperId = (m['helperId'] ?? '').toString();
 
-    final origStart = (m['startAt'] as Timestamp?)?.toDate();
-    final origEnd   = (m['endAt']   as Timestamp?)?.toDate();
+    // FIX: Check both timestamp field names
+    final origStart = ((m['startAt'] ?? m['start']) as Timestamp?)?.toDate();
+    final origEnd = ((m['endAt'] ?? m['end']) as Timestamp?)?.toDate();
 
     if (origStart == null || origEnd == null) {
       if (mounted) {
@@ -174,8 +176,8 @@ class _PeerTutorSchedulePageState extends State<PeerTutorSchedulePage> {
     if(result == null || !mounted) return;
 
     final startDt = result['start'];
-    final endDt   = result['end'];
-    final reason  = result['reason'];
+    final endDt = result['end'];
+    final reason = result['reason'];
 
     if (await _hasOverlap(helperId: helperId, startDt: startDt, endDt: endDt, excludeId: apptId)) {
       if (mounted) {
@@ -200,7 +202,8 @@ class _PeerTutorSchedulePageState extends State<PeerTutorSchedulePage> {
   }
 
   Future<void> _confirmCancel(String apptId, Map<String, dynamic> m) async {
-    final startTs = m['startAt'] as Timestamp?;
+    // FIX: Check both timestamp field names
+    final startTs = (m['startAt'] ?? m['start']) as Timestamp?;
     final start = startTs?.toDate();
 
     if (start == null) return;
@@ -287,7 +290,8 @@ class _PeerTutorSchedulePageState extends State<PeerTutorSchedulePage> {
                 fmtTime: _fmtTime,
 
                 onConfirm: (id, m) async {
-                  final ts = m['startAt'];
+                  // FIX: Check both timestamp field names
+                  final ts = m['startAt'] ?? m['start'];
                   if (ts is! Timestamp) return;
                   final start = ts.toDate();
 
@@ -314,7 +318,7 @@ class _PeerTutorSchedulePageState extends State<PeerTutorSchedulePage> {
   }
 }
 
-/* Rest of the code remains the same until _TaskItem */
+/* HeaderBar - Keep existing */
 
 class _HeaderBar extends StatelessWidget {
   const _HeaderBar();
@@ -396,7 +400,7 @@ class _HeaderBar extends StatelessWidget {
   }
 }
 
-/* Calendar and Day Cell - Keep existing code */
+/* Calendar Area */
 
 class _CalendarArea extends StatelessWidget {
   final String helperUid;
@@ -444,11 +448,12 @@ class _CalendarArea extends StatelessWidget {
             }
             for (final d in (appsSnap.data?.docs ?? const [])) {
               final m = d.data();
-              final ts = m['startAt'];
+              // FIX: Check both timestamp field names
+              final ts = m['startAt'] ?? m['start'];
               if (ts is Timestamp) add(ts.toDate());
 
               final newTs = m['proposedStartAt'];
-              if (newTs is Timestamp && newTs.toDate().day != ts?.toDate().day) add(newTs.toDate());
+              if (newTs is Timestamp && newTs.toDate().day != (ts as Timestamp?)?.toDate().day) add(newTs.toDate());
             }
             for (final d in (evSnap.data?.docs ?? const [])) {
               final m = d.data();
@@ -527,7 +532,7 @@ class _DayCell extends StatelessWidget {
   }
 }
 
-/* ---------------------------- Day Tasks (List) ---------------------------- */
+/* Day Tasks List */
 
 class _DayTasksList extends StatelessWidget {
   final String helperUid;
@@ -587,23 +592,17 @@ class _DayTasksList extends StatelessWidget {
 
             for (final d in (appsSnap.data?.docs ?? const [])) {
               final m = d.data();
-              final stTs = m['startAt'];
-              final enTs = m['endAt'];
-              final newStTs = m['proposedStartAt']; // Check proposed time for visibility
-
-              // Logic for appointment visibility on a day:
-              // 1. If it has a startAt on the selected day.
-              // 2. OR, if it's a pending reschedule and the *proposed* start time is on the selected day (meaning the user has been asked to confirm the new time).
+              // FIX: Check both timestamp field names
+              final stTs = m['startAt'] ?? m['start'];
+              final enTs = m['endAt'] ?? m['end'];
+              final newStTs = m['proposedStartAt'];
 
               bool isScheduledForToday(Timestamp? ts) => ts is Timestamp && _key(ts.toDate()) == _key(selectedDay);
               final status = (m['status'] ?? 'pending').toString().toLowerCase().trim();
 
               if (stTs is Timestamp && enTs is Timestamp) {
-                // Check original time
                 if (isScheduledForToday(stTs)) {
-                  // Only include terminal states if they are on today's schedule
                   if (status == 'completed' || status == 'cancelled' || status == 'missed') {
-                    // Only show completed/cancelled/missed if they haven't passed too long (e.g., today)
                     if (stTs.toDate().isAfter(DateTime.now().subtract(const Duration(hours: 24)))) {
                       items.add(_TaskItem.appointment(d.id, m));
                     }
@@ -611,8 +610,7 @@ class _DayTasksList extends StatelessWidget {
                     items.add(_TaskItem.appointment(d.id, m));
                   }
                 }
-                // Check proposed time if it's waiting for Peer action (Student proposed)
-                else if (status == 'pending_reschedule_student' && isScheduledForToday(newStTs)) {
+                else if ((status == 'pending_reschedule_student' || status == 'pending_reschedule_hop') && isScheduledForToday(newStTs)) {
                   items.add(_TaskItem.appointment(d.id, m));
                 }
               }
@@ -642,10 +640,10 @@ class _DayTasksList extends StatelessWidget {
             items.sort((a, b) {
               if (sortBy == 'status') {
                 int sv(String s) {
-                  // Prioritize pending actions: pending -> pending_reschedule_student (incoming) -> confirmed -> event -> terminal
                   switch (s) {
                     case 'pending': return 0;
                     case 'pending_reschedule_student': return 1;
+                    case 'pending_reschedule_hop': return 1;
                     case 'confirmed': return 2;
                     case 'event': return 3;
                     case 'completed': return 4;
@@ -658,11 +656,10 @@ class _DayTasksList extends StatelessWidget {
               } else if (sortBy == 'student') {
                 return a.title.toLowerCase().compareTo(b.title.toLowerCase());
               }
-              // Sort by display start time
-              final aStart = a.data.containsKey('proposedStartAt') && a.status == 'pending_reschedule_student'
+              final aStart = a.data.containsKey('proposedStartAt') && (a.status == 'pending_reschedule_student' || a.status == 'pending_reschedule_hop')
                   ? (a.data['proposedStartAt'] as Timestamp).toDate().millisecondsSinceEpoch
                   : a.start.millisecondsSinceEpoch;
-              final bStart = b.data.containsKey('proposedStartAt') && b.status == 'pending_reschedule_student'
+              final bStart = b.data.containsKey('proposedStartAt') && (b.status == 'pending_reschedule_student' || b.status == 'pending_reschedule_hop')
                   ? (b.data['proposedStartAt'] as Timestamp).toDate().millisecondsSinceEpoch
                   : b.start.millisecondsSinceEpoch;
               return aStart.compareTo(bStart);
@@ -692,13 +689,13 @@ class _DayTasksList extends StatelessWidget {
 
 class _TaskItem {
   final String id;
-  final String type; // appointment | event
+  final String type;
   final Map<String, dynamic> data;
 
-  final DateTime start; // original start time
-  final DateTime end;   // original end time
+  final DateTime start;
+  final DateTime end;
   final String title;
-  final String status; // pending/confirmed/... or 'event'
+  final String status;
   final String venue;
   final String mode;
 
@@ -720,8 +717,9 @@ class _TaskItem {
   });
 
   factory _TaskItem.appointment(String id, Map<String,dynamic> m) {
-    final st = (m['startAt'] as Timestamp).toDate();
-    final en = (m['endAt'] as Timestamp).toDate();
+    // FIX: Check both timestamp field names
+    final st = ((m['startAt'] ?? m['start']) as Timestamp).toDate();
+    final en = ((m['endAt'] ?? m['end']) as Timestamp).toDate();
     final status = (m['status'] ?? 'pending').toString().toLowerCase().trim();
     final mode = (m['mode'] ?? '').toString().toLowerCase();
     final venue = () {
@@ -733,11 +731,9 @@ class _TaskItem {
       return v.isNotEmpty ? v : 'Campus';
     }();
 
-    // FIX: Detect if this is a HOP appointment or Student appointment
     final bookerId = (m['bookerId'] ?? '').toString();
     final studentId = (m['studentId'] ?? '').toString();
 
-    // Use bookerId/bookerName if it's a HOP appointment
     final isHopAppointment = bookerId.isNotEmpty;
     final personId = isHopAppointment ? bookerId : studentId;
     final personName = isHopAppointment
@@ -814,13 +810,12 @@ class _TaskCard extends StatelessWidget {
     return '';
   }
 
-  // Action to accept a reschedule proposed by the student (status is pending_reschedule_student)
   Future<void> _acceptReschedule(BuildContext context, Map<String, dynamic> m) async {
     final apptId = item.id;
     final helperId = (m['helperId'] ?? '').toString();
 
     final newStartTs = m['proposedStartAt'] as Timestamp?;
-    final newEndTs   = m['proposedEndAt'] as Timestamp?;
+    final newEndTs = m['proposedEndAt'] as Timestamp?;
 
     if (newStartTs == null || newEndTs == null) {
       if (context.mounted) {
@@ -832,9 +827,8 @@ class _TaskCard extends StatelessWidget {
     }
 
     final newStartDt = newStartTs.toDate();
-    final newEndDt   = newEndTs.toDate();
+    final newEndDt = newEndTs.toDate();
 
-    // Re-check overlap before accepting (just in case another appointment was made just now)
     final hasOverlap = await _hasOverlap(helperId: helperId, startDt: newStartDt, endDt: newEndDt, excludeId: apptId);
     if (hasOverlap) {
       if (context.mounted) {
@@ -845,16 +839,18 @@ class _TaskCard extends StatelessWidget {
       return;
     }
 
-    // Finalize reschedule: update start/end and status
     try {
       await FirebaseFirestore.instance.collection('appointments').doc(apptId).set({
-        'status': 'confirmed', // Final status after successful peer confirmation
+        'status': 'confirmed',
         'startAt': newStartTs,
         'endAt': newEndTs,
-        'proposedStartAt': FieldValue.delete(), // Clear proposed times
+        'start': newStartTs,
+        'end': newEndTs,
+        'proposedStartAt': FieldValue.delete(),
         'proposedEndAt': FieldValue.delete(),
-        'rescheduleReasonPeer': FieldValue.delete(), // Clear reasons
+        'rescheduleReasonPeer': FieldValue.delete(),
         'rescheduleReasonStudent': FieldValue.delete(),
+        'rescheduleReasonHop': FieldValue.delete(),
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
 
@@ -868,7 +864,6 @@ class _TaskCard extends StatelessWidget {
     }
   }
 
-  // Same logic as in stateful widget, duplicated here as a helper since it's used only here.
   Future<bool> _hasOverlap({
     required String helperId,
     required DateTime startDt,
@@ -890,8 +885,8 @@ class _TaskCard extends StatelessWidget {
       List<DateTime?> checkStarts = [];
       List<DateTime?> checkEnds = [];
 
-      final tsStart = m['startAt'];
-      final tsEnd   = m['endAt'];
+      final tsStart = m['startAt'] ?? m['start'];
+      final tsEnd = m['endAt'] ?? m['end'];
       if (tsStart is Timestamp && tsEnd is Timestamp) {
         checkStarts.add(tsStart.toDate());
         checkEnds.add(tsEnd.toDate());
@@ -906,7 +901,7 @@ class _TaskCard extends StatelessWidget {
 
       for (int i = 0; i < checkStarts.length; i++) {
         final existingStart = checkStarts[i];
-        final existingEnd   = checkEnds[i];
+        final existingEnd = checkEnds[i];
         if (existingStart == null || existingEnd == null) continue;
 
         final overlaps = existingStart.isBefore(endDt) && existingEnd.isAfter(startDt);
@@ -916,7 +911,6 @@ class _TaskCard extends StatelessWidget {
     return false;
   }
 
-
   @override
   Widget build(BuildContext context) {
     final t = Theme.of(context).textTheme;
@@ -924,18 +918,17 @@ class _TaskCard extends StatelessWidget {
     final m = item.data;
     final isAppt = item.type == 'appointment';
 
-    // Time calculations based on status
     final isPending = item.status == 'pending';
     final isConfirmed = item.status == 'confirmed';
-    final isReschedulePendingPeer = item.status == 'pending_reschedule_peer'; // Peer proposed, student confirming
-    final isReschedulePendingStudent = item.status == 'pending_reschedule_student'; // Student proposed, peer confirming
+    final isReschedulePendingPeer = item.status == 'pending_reschedule_peer';
+    final isReschedulePendingStudent = item.status == 'pending_reschedule_student';
+    final isReschedulePendingHop = item.status == 'pending_reschedule_hop';
     final isTerminal = item.status == 'cancelled' || item.status == 'completed' || item.status == 'missed';
 
-    // Display times: use proposed times if waiting for peer confirmation (student proposed), otherwise use original times
-    final displayStart = isReschedulePendingStudent
+    final displayStart = (isReschedulePendingStudent || isReschedulePendingHop)
         ? (m['proposedStartAt'] as Timestamp?)?.toDate() ?? item.start
         : item.start;
-    final displayEnd = isReschedulePendingStudent
+    final displayEnd = (isReschedulePendingStudent || isReschedulePendingHop)
         ? (m['proposedEndAt'] as Timestamp?)?.toDate() ?? item.end
         : item.end;
 
@@ -948,13 +941,11 @@ class _TaskCard extends StatelessWidget {
     Color outline;
 
     if (!isAppt) {
-      // Event
       chipLabel = 'Event';
       chipBg = const Color(0xFFEDEEF1);
       chipFg = const Color(0xFF6B7280);
       outline = Colors.transparent;
     } else {
-      // Appointment
       switch (item.status) {
         case 'pending':
           chipLabel = 'Pending Confirmation';
@@ -1012,7 +1003,6 @@ class _TaskCard extends StatelessWidget {
       }
     }
 
-    // --- PEER BUSINESS LOGIC (Conditions 1 & 2) ---
     final now = DateTime.now();
     final timeRemainingHours = item.start.difference(now).inHours;
     final isWithin24Hours = timeRemainingHours <= 24;
@@ -1024,26 +1014,21 @@ class _TaskCard extends StatelessWidget {
 
     if (isAppt && isUpcoming) {
       if (isPending) {
-        // Condition 1 & 2: Pending appointments can always be confirmed/cancelled by Peer.
         canConfirm = true;
         canPeerCancel = true;
-        canPeerReschedule = !isWithin24Hours; // Only reschedule if > 24 hours (Condition 2)
+        canPeerReschedule = !isWithin24Hours;
       } else if (isConfirmed) {
-        // Condition 1: Confirmed <= 24h -> No Peer actions
         if (!isWithin24Hours) {
-          // Condition 2: Confirmed > 24h -> Peer can cancel or reschedule
           canPeerCancel = true;
           canPeerReschedule = true;
         }
       }
-      // Note: Reschedule pending status are handled by specific buttons below.
     }
 
-    // Title
     Widget titleWidget;
     if (isAppt) {
       if (item.studentName.isNotEmpty) {
-        titleWidget = Text('Tutoring for ${item.studentName}',
+        titleWidget = Text(item.title,
             style: t.titleMedium?.copyWith(fontWeight: FontWeight.w700));
       } else if (item.studentId.isNotEmpty) {
         titleWidget = FutureBuilder<DocumentSnapshot<Map<String, dynamic>>>(
@@ -1054,22 +1039,26 @@ class _TaskCard extends StatelessWidget {
               name = _pickName(snap.data!.data()!);
             }
             if (name.isEmpty) name = 'Student';
-            return Text('Tutoring for $name',
+
+            // Determine if HOP or Student
+            final bookerId = (m['bookerId'] ?? '').toString();
+            final isHopAppt = bookerId.isNotEmpty;
+            final finalTitle = isHopAppt ? 'Meeting with $name' : 'Tutoring for $name';
+
+            return Text(finalTitle,
                 style: t.titleMedium?.copyWith(fontWeight: FontWeight.w700));
           },
         );
       } else {
-        titleWidget = Text('Tutoring for Student',
+        titleWidget = Text(item.title,
             style: t.titleMedium?.copyWith(fontWeight: FontWeight.w700));
       }
     } else {
       titleWidget = Text(item.title, style: t.titleMedium?.copyWith(fontWeight: FontWeight.w700));
     }
 
-    // FIX: Navigation to Peer Booking Info Page (Scenario 2 - Clickable)
     void _openDetails() {
       if (isAppt) {
-        // Navigate to the Appointment Booking Info page
         Navigator.pushNamed(
           context,
           '/peer/booking-info',
@@ -1089,7 +1078,6 @@ class _TaskCard extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Avatar for appointment/Icon for event
           Container(
             height: 44, width: 44,
             decoration: BoxDecoration(color: Colors.white, border: Border.all(color: Colors.black87, width: 2), shape: BoxShape.circle),
@@ -1117,7 +1105,6 @@ class _TaskCard extends StatelessWidget {
                 Text('Venue: ${item.venue}', style: t.bodySmall),
                 const SizedBox(height: 8),
 
-                // Reschedule reason display
                 if (isReschedulePendingPeer)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 8.0),
@@ -1134,7 +1121,6 @@ class _TaskCard extends StatelessWidget {
                       style: t.bodySmall?.copyWith(color: chipFg),
                     ),
                   )
-// ADD THIS:
                 else if (item.status == 'pending_reschedule_hop')
                     Padding(
                       padding: const EdgeInsets.only(bottom: 8.0),
@@ -1144,7 +1130,6 @@ class _TaskCard extends StatelessWidget {
                       ),
                     ),
 
-                // Cancellation reason display
                 if (isTerminal && item.status == 'cancelled' && m.containsKey('cancellationReason'))
                   Padding(
                     padding: const EdgeInsets.only(bottom: 8.0),
@@ -1154,29 +1139,24 @@ class _TaskCard extends StatelessWidget {
                     ),
                   ),
 
-                if (isAppt && isUpcoming) // Only show buttons for upcoming appointments
+                if (isAppt && isUpcoming)
                   Align(
                     alignment: Alignment.centerRight,
                     child: Wrap(
                       spacing: 8,
                       children: [
-                        // Accept Reschedule (when HOP proposed, status: pending_reschedule_hop)
                         if (item.status == 'pending_reschedule_hop')
                           _SmallBtn(label: 'Accept Reschedule', color: const Color(0xFF2E7D32), onTap: () => _acceptReschedule(context, m)),
 
-                        // Accept Reschedule (when student proposed, status: pending_reschedule_student)
                         if (isReschedulePendingStudent)
                           _SmallBtn(label: 'Accept Reschedule', color: const Color(0xFF2E7D32), onTap: () => _acceptReschedule(context, m)),
 
-                        // Confirm (initial booking, status: pending)
                         if (canConfirm && isPending)
                           _SmallBtn(label: 'Confirm', color: const Color(0xFF2E7D32), onTap: () async => onConfirm(item.id, m)),
 
-                        // Reschedule (only if outside 24h & confirmed/pending)
                         if (canPeerReschedule)
                           _SmallBtn(label: 'Reschedule', color: const Color(0xFF1565C0), onTap: () async => onReschedule(item.id, m)),
 
-                        // Cancel (available if pending or confirmed > 24h)
                         if (canPeerCancel)
                           _SmallBtn(label: 'Cancel', color: const Color(0xFFEF6C00), onTap: () async => onCancel(item.id, m)),
                       ],
@@ -1193,7 +1173,7 @@ class _TaskCard extends StatelessWidget {
       color: Colors.transparent,
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
-        onTap: _openDetails, // Scenario 2: Clickable to Booking Info
+        onTap: _openDetails,
         child: card,
       ),
     );
@@ -1238,7 +1218,6 @@ class _RescheduleDialogPeerState extends State<_RescheduleDialogPeer> {
   @override
   void initState() {
     super.initState();
-    // Pre-fill with current appointment details
     _date = DateTime(widget.currentStart.year, widget.currentStart.month, widget.currentStart.day);
     _startTod = TimeOfDay.fromDateTime(widget.currentStart);
     _endTod = TimeOfDay.fromDateTime(widget.currentEnd);
@@ -1253,7 +1232,6 @@ class _RescheduleDialogPeerState extends State<_RescheduleDialogPeer> {
   String _fmtTime(TimeOfDay t) => DateFormat.jm().format(DateTime(2025,1,1,t.hour, t.minute));
 
   Future<void> _pickDate() async {
-    // Peers should only be able to reschedule to a date at least 24 hours away
     final p = await showDatePicker(context: context, initialDate: _date, firstDate: DateTime.now().add(const Duration(hours: 24)), lastDate: DateTime.now().add(const Duration(days: 365)));
     if (p != null) setState(() => _date = p);
   }
@@ -1279,10 +1257,10 @@ class _RescheduleDialogPeerState extends State<_RescheduleDialogPeer> {
             decoration: const InputDecoration(
                 hintText: 'Reason for rescheduling (Max 20 characters)',
                 border: OutlineInputBorder(),
-                counterText: '' // Hide default counter
+                counterText: ''
             ),
             maxLines: 2,
-            maxLength: 20, // Enforce max 20 characters
+            maxLength: 20,
           ),
         ]),
       ),
@@ -1297,7 +1275,6 @@ class _RescheduleDialogPeerState extends State<_RescheduleDialogPeer> {
             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('End time must be after start time.')));
             return;
           }
-          // The date picker already handles the minimum time, but check the final result just in case
           if (start.isBefore(DateTime.now())) {
             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('New time must be in the future.')));
             return;

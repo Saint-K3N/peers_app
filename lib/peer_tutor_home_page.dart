@@ -99,7 +99,6 @@ class _Header extends StatelessWidget {
     Widget buildRow(String photoUrl) {
       return Row(
         children: [
-          // Logo
           Container(
             height: 48,
             width: 48,
@@ -120,7 +119,6 @@ class _Header extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 12),
-          // Title
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -129,7 +127,6 @@ class _Header extends StatelessWidget {
             ],
           ),
           const Spacer(),
-          // Profile avatar (tap to profile page)
           InkWell(
             borderRadius: BorderRadius.circular(30),
             onTap: () => Navigator.pushNamed(context, '/tutor/personal_profile'),
@@ -161,7 +158,6 @@ class _Header extends StatelessWidget {
     );
   }
 }
-
 
 /* ----------------------- Greeting / Stats (live from Firestore) ------------ */
 
@@ -204,21 +200,20 @@ class _GreetingLoader extends StatelessWidget {
         return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
           stream: appsStream,
           builder: (context, appsSnap) {
-            int upcoming = 0; // confirmed & future
-            int pending  = 0; // pending   & future
+            int upcoming = 0;
+            int pending  = 0;
             final now = DateTime.now();
 
             for (final d in (appsSnap.data?.docs ?? const [])) {
               final m = d.data();
               final status = (m['status'] ?? 'pending').toString().toLowerCase().trim();
 
-              // Check for appointments that require action from the Peer (pending or pending reschedule from student)
-              final isPendingAction = status == 'pending' || status == 'pending_reschedule_student';
+              final isPendingAction = status == 'pending' || status == 'pending_reschedule_student' || status == 'pending_reschedule_hop';
 
-              // consider future only (endAt if present, else startAt)
+              // FIX: Check both timestamp field names (Student uses startAt/endAt, HOP uses start/end)
               DateTime? end;
-              final endTs = m['endAt'];
-              final startTs = m['startAt'];
+              final endTs = m['endAt'] ?? m['end'];
+              final startTs = m['startAt'] ?? m['start'];
               if (endTs is Timestamp) {
                 end = endTs.toDate();
               } else if (startTs is Timestamp) {
@@ -299,7 +294,6 @@ class _GreetingCardTutor extends StatelessWidget {
               Expanded(
                 child: _StatTile(
                   value: '$pending',
-                  // Label updated to reflect new pending states
                   label: 'Pending Requests',
                   onTap: onTapPending,
                 ),
@@ -434,7 +428,7 @@ class _QuickActionTile extends StatelessWidget {
   }
 }
 
-/* ---------------------------- Today's Schedule List (Scenario 1) ------------------------ */
+/* ---------------------------- Today's Schedule List ------------------------ */
 
 class _TodayScheduleList extends StatelessWidget {
   final String helperUid;
@@ -462,21 +456,22 @@ class _TodayScheduleList extends StatelessWidget {
         final docs = (snap.data?.docs ?? const [])
             .where((d) {
           final m = d.data();
-          final startTs = m['startAt'];
+          // FIX: Check both timestamp field names
+          final startTs = m['startAt'] ?? m['start'];
           if (startTs is! Timestamp) return false;
           final dt = startTs.toDate();
           final sameDay = dt.year == now.year && dt.month == now.month && dt.day == now.day;
 
           final status = (m['status'] ?? 'pending').toString().toLowerCase().trim();
-          // show "active" items (pending/confirmed/reschedule_pending) even if earlier today (to allow outcomes)
           final active = status == 'pending' || status == 'confirmed' || status.startsWith('pending_reschedule');
           return sameDay && active;
         })
             .toList()
           ..sort((a, b) {
             int aMillis = 0, bMillis = 0;
-            final aTs = a.data()['startAt'];
-            final bTs = b.data()['startAt'];
+            // FIX: Check both timestamp field names
+            final aTs = a.data()['startAt'] ?? a.data()['start'];
+            final bTs = b.data()['startAt'] ?? b.data()['start'];
             if (aTs is Timestamp) aMillis = aTs.toDate().millisecondsSinceEpoch;
             if (bTs is Timestamp) bMillis = bTs.toDate().millisecondsSinceEpoch;
             return aMillis.compareTo(bMillis);
@@ -499,7 +494,7 @@ class _TodayScheduleList extends StatelessWidget {
   }
 }
 
-/* ------------------------------ Schedule Tile (Scenario 1 Implementation) ----------------------------- */
+/* ------------------------------ Schedule Tile ----------------------------- */
 
 class _TutorScheduleTile extends StatelessWidget {
   final QueryDocumentSnapshot<Map<String, dynamic>> appDoc;
@@ -527,21 +522,19 @@ class _TutorScheduleTile extends StatelessWidget {
       final p = pick(profile, const ['fullName', 'full_name', 'name', 'displayName', 'display_name']);
       if (p.isNotEmpty) return p;
     }
-    return 'Student';
+    return '';
   }
-
-  /* -------------------- Shared Firestore helpers -------------------- */
 
   Future<void> _updateStatus(BuildContext context, String id, String status, {String? cancellationReason}) async {
     try {
       final updateData = {
         'status': status,
         'updatedAt': FieldValue.serverTimestamp(),
-        // Clear reschedule-related fields upon successful final status update
         'proposedStartAt': FieldValue.delete(),
         'proposedEndAt': FieldValue.delete(),
         'rescheduleReasonPeer': FieldValue.delete(),
         'rescheduleReasonStudent': FieldValue.delete(),
+        'rescheduleReasonHop': FieldValue.delete(),
         if (cancellationReason != null) 'cancellationReason': cancellationReason,
         if (cancellationReason != null) 'cancelledBy': 'helper',
       };
@@ -561,7 +554,6 @@ class _TutorScheduleTile extends StatelessWidget {
     }
   }
 
-  // Simplified 20-character reason dialog
   Future<String?> _getReason(BuildContext context, String action) async {
     final reasonCtrl = TextEditingController();
     final result = await showDialog<String?>(
@@ -571,11 +563,11 @@ class _TutorScheduleTile extends StatelessWidget {
         content: TextField(
           controller: reasonCtrl,
           maxLines: 2,
-          maxLength: 20, // Enforce max 20 characters
+          maxLength: 20,
           decoration: const InputDecoration(
             hintText: 'Enter reason (Max 20 characters)',
             border: OutlineInputBorder(),
-            counterText: '', // Hide built-in counter
+            counterText: '',
           ),
         ),
         actions: [
@@ -622,14 +614,13 @@ class _TutorScheduleTile extends StatelessWidget {
     await _updateStatus(context, id, 'missed');
   }
 
-  // REFACTORED: Cancel function with 24h check and simplified dialog
   Future<void> _confirmCancel(BuildContext context, Map<String, dynamic> m, String apptId) async {
-    final startTs = m['startAt'] as Timestamp?;
+    // FIX: Check both timestamp field names
+    final startTs = (m['startAt'] ?? m['start']) as Timestamp?;
     final start = startTs?.toDate();
 
     if (start == null) return;
 
-    // --- CONDITION 1 CHECK ---
     final status = (m['status'] ?? '').toString().toLowerCase();
     final isConfirmed = status == 'confirmed';
     final isWithin24Hours = start.difference(DateTime.now()).inHours <= 24;
@@ -643,7 +634,6 @@ class _TutorScheduleTile extends StatelessWidget {
       return;
     }
 
-    // Use the new simplified 20-char reason dialog
     final reason = await _getReason(context, 'Cancel');
 
     if (reason != null && context.mounted) {
@@ -651,30 +641,34 @@ class _TutorScheduleTile extends StatelessWidget {
     }
   }
 
-
   @override
   Widget build(BuildContext context) {
     final m = appDoc.data();
 
+    final bookerId = (m['bookerId'] ?? '').toString();
     final studentId = (m['studentId'] ?? '').toString();
+    final isHopAppointment = bookerId.isNotEmpty;
+
+    final personId = isHopAppointment ? bookerId : studentId;
+
     final status = (m['status'] ?? 'pending').toString().toLowerCase().trim();
 
-    final startTs = m['startAt'] as Timestamp?;
-    final endTs   = m['endAt'] as Timestamp?;
-    final start   = startTs?.toDate();
-    final end     = endTs?.toDate();
+    // FIX: Check both timestamp field names
+    final startTs = (m['startAt'] ?? m['start']) as Timestamp?;
+    final endTs = (m['endAt'] ?? m['end']) as Timestamp?;
+    final start = startTs?.toDate();
+    final end = endTs?.toDate();
 
-    final isReschedulePendingHelper = status == 'pending_reschedule_student'; // Student proposed, peer confirming
+    final isReschedulePendingHelper = status == 'pending_reschedule_student' || status == 'pending_reschedule_hop';
 
     final displayStart = start;
-    final displayEnd   = end;
+    final displayEnd = end;
 
     final date = (displayStart != null) ? _fmtDate(displayStart) : '—';
     final time = (displayStart != null && displayEnd != null)
         ? '${_fmtTime(TimeOfDay.fromDateTime(displayStart))} - ${_fmtTime(TimeOfDay.fromDateTime(displayEnd))}'
         : '—';
 
-    // venue/mode resolving
     final mode = (m['mode'] ?? '').toString().toLowerCase();
     final venue = () {
       if (mode == 'online') {
@@ -685,40 +679,44 @@ class _TutorScheduleTile extends StatelessWidget {
       return v.isNotEmpty ? v : 'Campus';
     }();
 
-    // Chip visuals
     final (chipLabel, chipBg, chipFg) = switch (status) {
       'pending'   => ('Confirmation Pending',   const Color(0xFFEDEEF1), const Color(0xFF6B7280)),
       'confirmed' => ('Confirmed', const Color(0xFFC9F2D9), const Color(0xFF1B5E20)),
       'cancelled' => ('Cancelled', const Color(0xFFFFCDD2), const Color(0xFFC62828)),
       'completed' => ('Completed', const Color(0xFFC8F2D2), const Color(0xFF2E7D32)),
-      'missed'    => ('Missed',    const Color(0xFFFFF3CD), const Color(0xFF8A6D3B)),
-      'pending_reschedule_student' => ('Reschedule Confirm?', const Color(0xFFFFCC80), const Color(0xFFEF6C00)),
+      'missed'    => ('Missed',    const Color(0xFFC8F2D2), const Color(0xFF2E7D32)),
+      'pending_reschedule_peer' => ('Peer Reschedule', const Color(0xFFFFF3CD), const Color(0xFF8A6D3B)),
+      'pending_reschedule_student' => ('Confirm Reschedule?', const Color(0xFFFFCC80), const Color(0xFFEF6C00)),
+      'pending_reschedule_hop' => ('Confirm Reschedule?', const Color(0xFFFFCC80), const Color(0xFFEF6C00)),
       _           => ('Pending',   const Color(0xFFEDEEF1), const Color(0xFF6B7280)),
     };
 
-    // --- PEER BUSINESS LOGIC (Conditions 1 & 2) ---
     final now = DateTime.now();
     final isPending = status == 'pending';
     final isConfirmed = status == 'confirmed';
     final isTerminal = status == 'cancelled' || status == 'completed' || status == 'missed';
 
-    // Use ORIGINAL start time for all policy checks (cancel/reschedule/outcome)
     final isBeforeOriginalStart = start != null && now.isBefore(start);
     final canConfirmOriginal = isBeforeOriginalStart;
-    final canOutcome = start != null && !now.isBefore(start); // after or at start time
+    final canOutcome = start != null && !now.isBefore(start);
 
-    // Cancellation is allowed if pending, OR if confirmed and > 24 hours.
     final canPeerCancel = !isTerminal && (isPending || (isConfirmed && (start?.difference(now).inHours ?? 0) > 24));
 
-
     return FutureBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      future: FirebaseFirestore.instance.collection('users').doc(studentId).get(),
+      future: FirebaseFirestore.instance.collection('users').doc(personId).get(),
       builder: (context, snap) {
         final um = snap.data?.data() ?? const {};
-        final studentName = _pickStudentName(um);
+
+        final personName = isHopAppointment
+            ? (m['bookerName'] ?? _pickStudentName(um)).toString()
+            : (m['studentName'] ?? _pickStudentName(um)).toString();
+
         final rawPhotoUrl = um['photoUrl'] ?? um['avatarUrl'] ?? '';
         final photoUrl = (rawPhotoUrl is String) ? rawPhotoUrl.trim() : '';
-        final title = 'Session with $studentName';
+
+        final title = isHopAppointment
+            ? 'Meeting with ${personName.isNotEmpty ? personName : 'HOP'}'
+            : 'Session with ${personName.isNotEmpty ? personName : 'Student'}';
 
         return Container(
           decoration: BoxDecoration(
@@ -732,7 +730,6 @@ class _TutorScheduleTile extends StatelessWidget {
             ),
             boxShadow: [BoxShadow(color: Colors.black.withOpacity(.06), blurRadius: 10, offset: const Offset(0, 6))],
           ),
-          // SCENARIO 1 FIX: Card is now clickable to Booking Info.
           child: InkWell(
             onTap: () {
               Navigator.pushNamed(
@@ -747,7 +744,6 @@ class _TutorScheduleTile extends StatelessWidget {
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Left avatar (student)
                   CircleAvatar(
                     radius: 22,
                     backgroundColor: const Color(0xFFEEEEEE),
@@ -755,7 +751,6 @@ class _TutorScheduleTile extends StatelessWidget {
                     child: (photoUrl.isEmpty) ? const Icon(Icons.person, color: Colors.grey) : null,
                   ),
                   const SizedBox(width: 12),
-                  // Details
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -772,11 +767,9 @@ class _TutorScheduleTile extends StatelessWidget {
                         Text('Venue: $venue', style: Theme.of(context).textTheme.bodySmall),
                         const SizedBox(height: 8),
 
-                        // Actions row with policy gates
                         Row(
                           mainAxisAlignment: MainAxisAlignment.end,
                           children: [
-                            // Confirm (initial booking) only before start & when pending
                             if (isPending && canConfirmOriginal)
                               Padding(
                                 padding: const EdgeInsets.only(right: 8),
@@ -787,8 +780,6 @@ class _TutorScheduleTile extends StatelessWidget {
                                 ),
                               ),
 
-                            // Action: Reschedule Pending Helper (Student proposed)
-                            // Must push to the info page as the Home Page tile logic can't handle the Accept action directly.
                             if (isReschedulePendingHelper && canConfirmOriginal)
                               Padding(
                                 padding: const EdgeInsets.only(right: 8),
@@ -799,8 +790,6 @@ class _TutorScheduleTile extends StatelessWidget {
                                 ),
                               ),
 
-
-                            // Cancel: available if pending or confirmed > 24h
                             if (canPeerCancel)
                               Padding(
                                 padding: const EdgeInsets.only(right: 8),
@@ -811,7 +800,6 @@ class _TutorScheduleTile extends StatelessWidget {
                                 ),
                               ),
 
-                            // After start: outcomes (if not already terminal)
                             if (!isTerminal && canOutcome) ...[
                               const SizedBox(width: 8),
                               _SmallButton(

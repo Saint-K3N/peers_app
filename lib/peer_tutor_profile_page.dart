@@ -717,10 +717,22 @@ class _PastSessionsCardTutor extends StatelessWidget {
 
           final all = snap.data?.docs ?? const [];
           final docs = all
-              .where((d) => ((d.data()['status'] ?? '') as Object?)
-              .toString()
-              .toLowerCase()
-              .trim() == 'completed')
+              .where((d) {
+            final data = d.data();
+            final status = ((data['status'] ?? '') as Object?)
+                .toString()
+                .toLowerCase()
+                .trim();
+            // Only include completed sessions with students (exclude HOP and School Counsellor)
+            final createdByRole = (data['createdByRole'] ?? '').toString().toLowerCase().trim();
+            final bookerRole = (data['bookerRole'] ?? '').toString().toLowerCase().trim();
+
+            return status == 'completed' &&
+                createdByRole != 'hop' &&
+                createdByRole != 'school_counsellor' &&
+                bookerRole != 'hop' &&
+                bookerRole != 'school_counsellor';
+          })
               .toList()
             ..sort((a, b) {
               int at = 0, bt = 0;
@@ -791,7 +803,7 @@ class _PastTutorSessionRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final m = appDoc.data();
-    final studentId = (m['studentId'] ?? '').toString();
+    final studentId = (m['studentId'] ?? '').toString().trim();
     final startTs = m['startAt'] as Timestamp?;
     final endTs = m['endAt'] as Timestamp?;
     final location = (m['location'] ?? m['venue'] ?? 'Campus').toString();
@@ -802,6 +814,70 @@ class _PastTutorSessionRow extends StatelessWidget {
     final time = (start != null && end != null)
         ? '${_fmtTime(TimeOfDay.fromDateTime(start))} - ${_fmtTime(TimeOfDay.fromDateTime(end))}'
         : '—';
+
+    // Safety check: if studentId is empty, show minimal info without fetching user
+    if (studentId.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF9FFFB),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: const Color(0xFF50B46A), width: 2),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            CircleAvatar(
+              radius: 21,
+              backgroundColor: Colors.white,
+              child: Icon(Icons.person_outline, color: const Color(0xFF50B46A)),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text('Tutoring Session',
+                            style: Theme.of(context)
+                                .textTheme
+                                .titleMedium
+                                ?.copyWith(fontWeight: FontWeight.w700)),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFC8F2D2),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: const Color(0xFF2E7D32)),
+                        ),
+                        child: Text('Completed',
+                            style: Theme.of(context)
+                                .textTheme
+                                .labelMedium
+                                ?.copyWith(
+                                color: const Color(0xFF2E7D32),
+                                fontWeight: FontWeight.w700)),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text('Date: $date',
+                      style: Theme.of(context).textTheme.bodySmall),
+                  Text('Time: $time',
+                      style: Theme.of(context).textTheme.bodySmall),
+                  Text('Venue: $location',
+                      style: Theme.of(context).textTheme.bodySmall),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
 
     return FutureBuilder(
       future: FirebaseFirestore.instance.collection('users').doc(studentId).get(),
@@ -950,9 +1026,17 @@ class _StudentsYouWorkedWith extends StatelessWidget {
     final byStudent =
     <String, List<QueryDocumentSnapshot<Map<String, dynamic>>>>{};
 
-    // Group completed sessions by student
+    // Group completed sessions by student (exclude HOP and School Counsellor)
     for (final d in appts.docs) {
-      final s = (d['studentId'] ?? '').toString();
+      final data = d.data();
+      final createdByRole = (data['createdByRole'] ?? '').toString().toLowerCase().trim();
+      final bookerRole = (data['bookerRole'] ?? '').toString().toLowerCase().trim();
+
+      // Skip HOP and School Counsellor appointments - only include students
+      if (createdByRole == 'hop' || createdByRole == 'school_counsellor') continue;
+      if (bookerRole == 'hop' || bookerRole == 'school_counsellor') continue;
+
+      final s = (data['studentId'] ?? data['bookerId'] ?? '').toString();
       if (s.isEmpty) continue;
       (byStudent[s] ??= []).add(d);
     }
