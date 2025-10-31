@@ -654,18 +654,6 @@ class _StudentsList extends StatelessWidget {
                           ],
                         ),
                       ),
-                      SizedBox(
-                        height: 30,
-                        child: FilledButton(
-                          style: FilledButton.styleFrom(backgroundColor: Colors.black),
-                          onPressed: () => Navigator.pushNamed(
-                            context,
-                            studentReportRoute,
-                            arguments: {'studentId': sid},
-                          ),
-                          child: const Text('View'),
-                        ),
-                      ),
                     ],
                   ),
                 );

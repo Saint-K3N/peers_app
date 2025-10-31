@@ -230,7 +230,7 @@ class _SCAppCardWrapper extends StatelessWidget {
     final data = appDoc.data() ?? {};
     final uid = (data['userId'] ?? '').toString();
 
-    // ✅ Extra guard (legacy docs safety)
+    // Extra guard (legacy docs safety)
     final role = ((data['requestedRole'] ?? data['role'] ?? '') as String).toLowerCase();
     if (role != 'peer_counsellor') {
       return const SizedBox.shrink();

@@ -26,6 +26,7 @@ class _MyHomePageState extends State<MyHomePage> {
   void _goToRegister() => Navigator.pushNamed(context, '/register');
   void _forgotPassword() => Navigator.pushNamed(context, '/forgot');
 
+  // Checks login error handling from login page
   Future<void> _login() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _isLoading = true);

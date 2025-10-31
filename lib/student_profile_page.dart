@@ -63,7 +63,7 @@ class InterestItem {
 class _StudentProfilePageState extends State<StudentProfilePage> {
   final _aboutCtrl = TextEditingController();
 
-  bool _editing = false;
+  bool _editing = false; //View only mode first//
   bool _saving = false;
 
   bool _uploadingAvatar = false;

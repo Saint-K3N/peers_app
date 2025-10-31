@@ -121,7 +121,7 @@ class _GreetingCardAdminFirebase extends StatelessWidget {
     final authUser = FirebaseAuth.instance.currentUser;
     final uid = authUser?.uid;
 
-    // ✅ Make the stream explicitly typed and nullable
+    // Make the stream explicitly typed and nullable
     final Stream<DocumentSnapshot<Map<String, dynamic>>>? userDocStream = uid == null
         ? null
         : FirebaseFirestore.instance.collection('users').doc(uid).snapshots();
@@ -134,7 +134,7 @@ class _GreetingCardAdminFirebase extends StatelessWidget {
         .where('status', isEqualTo: 'pending');
 
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: userDocStream, // ✅ Now matches the expected type
+      stream: userDocStream, //
       builder: (context, userSnap) {
         final name = _pickName(authUser, userSnap.data?.data());
 

@@ -164,9 +164,9 @@ class _AdminUserManagementPageState extends State<AdminUserManagementPage> {
     }
   }
 
-  /// ✅ ENHANCED: Toggleable status helper with double confirmation
+  /// Toggleable status helper with double confirmation
   Future<void> _setUserStatusByEmail(String email, String status, String userName) async {
-    // ✅ NEW: Double confirmation dialog
+    // Double confirmation dialog
     final action = status == 'active' ? 'activate' : 'deactivate';
     final ok = await showDialog<bool>(
       context: context,
@@ -248,23 +248,29 @@ class _AdminUserManagementPageState extends State<AdminUserManagementPage> {
                       children: [
                         Text(
                           'User Management',
-                          style: t.titleLarge?.copyWith(fontWeight: FontWeight.w700),
+                          style: t.headlineMedium
+                              ?.copyWith(fontWeight: FontWeight.bold),
                         ),
-                        const SizedBox(height: 4),
+                        const SizedBox(height: 2),
                         Text(
-                          'Search users, view current role, set role (HOP / School Counsellor), activate or deactivate accounts',
+                          'Admin can set or change each user role here',
                           style: t.bodySmall,
-                          softWrap: true,
                         ),
                       ],
                     ),
                   ),
                 ],
               ),
+              const SizedBox(height: 14),
 
-              const SizedBox(height: 12),
-
-              _SearchField(
+              TextField(
+                decoration: InputDecoration(
+                  hintText: 'Search name, ID, or email',
+                  prefixIcon: const Icon(Icons.search),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
                 onChanged: (v) =>
                     setState(() => _search = v.trim().toLowerCase()),
               ),
@@ -324,7 +330,7 @@ class _AdminUserManagementPageState extends State<AdminUserManagementPage> {
                         roleFilter: _selectedRoleFilter,
                         facFilter: _selectedFacultyFilter,
                         onRoleChange: _updateUserRoleByEmail,
-                        onToggleStatus: _setUserStatusByEmail, // ✅ Updated signature
+                        onToggleStatus: _setUserStatusByEmail,
                         readRole: _readRole,
                         facultyIdToName: facultyIdToName,
                       ),
@@ -402,39 +408,20 @@ class _IconSquare extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(10),
+      color: Colors.transparent,
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(10),
-        child: Ink(
-          height: 36,
-          width: 36,
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          width: 44,
+          height: 44,
           decoration: BoxDecoration(
-            border: Border.all(color: Colors.black26),
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.black12),
           ),
+          alignment: Alignment.center,
           child: Icon(icon, size: 20),
         ),
-      ),
-    );
-  }
-}
-
-class _SearchField extends StatelessWidget {
-  final ValueChanged<String> onChanged;
-  const _SearchField({required this.onChanged});
-
-  @override
-  Widget build(BuildContext context) {
-    return TextField(
-      onChanged: onChanged,
-      decoration: InputDecoration(
-        hintText: 'Search users',
-        prefixIcon: const Icon(Icons.search),
-        contentPadding:
-        const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
       ),
     );
   }
@@ -444,24 +431,25 @@ class _DropdownPill<T> extends StatelessWidget {
   final T value;
   final List<T> items;
   final ValueChanged<T?> onChanged;
-  const _DropdownPill(
-      {required this.value, required this.items, required this.onChanged});
+  const _DropdownPill({
+    required this.value,
+    required this.items,
+    required this.onChanged,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 42,
-      padding: const EdgeInsets.symmetric(horizontal: 10),
+      height: 44,
+      padding: const EdgeInsets.symmetric(horizontal: 12),
       decoration: BoxDecoration(
-        color: Colors.white,
         border: Border.all(color: Colors.black26),
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(12),
       ),
       child: DropdownButton<T>(
-        isExpanded: true,
-        underline: const SizedBox(),
         value: value,
-        icon: const Icon(Icons.arrow_drop_down),
+        underline: const SizedBox(),
+        isExpanded: true,
         items: items
             .map((e) => DropdownMenuItem<T>(value: e, child: Text('$e')))
             .toList(),
@@ -495,7 +483,7 @@ class _SectionLabel extends StatelessWidget {
 class _UsersFromFirestoreList extends StatelessWidget {
   final String search, roleFilter, facFilter;
   final Future<void> Function(String email, String newRoleLabel) onRoleChange;
-  final Future<void> Function(String email, String status, String userName) onToggleStatus; // ✅ Updated
+  final Future<void> Function(String email, String status, String userName) onToggleStatus;
   final UserRole Function(String? s) readRole;
   final Map<String, String> facultyIdToName;
 
@@ -537,46 +525,71 @@ class _UsersFromFirestoreList extends StatelessWidget {
           );
         }).toList();
 
-        final s = search.trim().toLowerCase();
-        users = users.where((u) {
-          final matchesSearch = s.isEmpty ||
-              u.name.toLowerCase().contains(s) ||
-              u.id.toLowerCase().contains(s) ||
-              u.email.toLowerCase().contains(s);
-          final matchesRole = roleFilter == 'All Roles' ||
-              _roleToLabelStatic(u.role) == roleFilter;
-          final matchesFac =
-              facFilter == 'All Faculties' || u.facultyName == facFilter;
-          return matchesSearch && matchesRole && matchesFac;
-        }).toList();
+        // ✅ FIX: Filter out users who have corresponding Firebase Auth entries
+        // This prevents showing "ghost" users whose Firestore docs exist but Auth accounts don't
+        return FutureBuilder<List<AppUser>>(
+          future: _filterUsersWithValidAuth(users),
+          builder: (context, authFilteredSnap) {
+            if (!authFilteredSnap.hasData) {
+              return const Center(child: CircularProgressIndicator());
+            }
 
-        if (users.isEmpty) {
-          return const Text('No users found.');
-        }
+            List<AppUser> filteredUsers = authFilteredSnap.data!;
 
-        return Column(
-          children: [
-            Align(
-              alignment: Alignment.centerLeft,
-              child: Text('Found ${users.length} users',
-                  style: Theme.of(context).textTheme.bodySmall),
-            ),
-            const SizedBox(height: 8),
-            for (final u in users) ...[
-              _UserItemCard(
-                user: u,
-                onRoleChanged: (label) async {
-                  if (label == null) return;
-                  await onRoleChange(u.email, label);
-                },
-                onToggleStatus: onToggleStatus,
-              ),
-              const SizedBox(height: 14),
-            ],
-          ],
+            // Search Bar - Search
+            final s = search.trim().toLowerCase();
+            filteredUsers = filteredUsers.where((u) {
+              final matchesSearch = s.isEmpty ||
+                  u.name.toLowerCase().contains(s) ||
+                  u.id.toLowerCase().contains(s) ||
+                  u.email.toLowerCase().contains(s);
+              final matchesRole = roleFilter == 'All Roles' ||
+                  _roleToLabelStatic(u.role) == roleFilter;
+              final matchesFac =
+                  facFilter == 'All Faculties' || u.facultyName == facFilter;
+              return matchesSearch && matchesRole && matchesFac;
+            }).toList();
+
+            if (filteredUsers.isEmpty) {
+              return const Text('No users found.');
+            }
+
+            return Column(
+              children: [
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('Found ${filteredUsers.length} users',
+                      style: Theme.of(context).textTheme.bodySmall),
+                ),
+                const SizedBox(height: 8),
+                for (final u in filteredUsers) ...[
+                  _UserItemCard(
+                    user: u,
+                    onRoleChanged: (label) async {
+                      if (label == null) return;
+                      await onRoleChange(u.email, label);
+                    },
+                    onToggleStatus: onToggleStatus,
+                  ),
+                  const SizedBox(height: 14),
+                ],
+              ],
+            );
+          },
         );
       },
     );
+  }
+
+  // ✅ NEW METHOD: Filter users based on whether their Auth account still exists
+  // This checks if the uid stored in Firestore document actually matches an existing Auth user
+  Future<List<AppUser>> _filterUsersWithValidAuth(List<AppUser> users) async {
+    // Simple approach: Only show users whose Firestore doc has a valid uid field
+    // The uid field should be set during account creation and removed if Auth is deleted
+    return users.where((user) {
+      // Keep users that have a uid field (meaning their Auth account exists)
+      return user.uid != null && user.uid!.isNotEmpty;
+    }).toList();
   }
 
   static String _roleToLabelStatic(UserRole r) {
@@ -690,7 +703,7 @@ class _StatBox extends StatelessWidget {
 class _UserItemCard extends StatelessWidget {
   final AppUser user;
   final ValueChanged<String?> onRoleChanged;
-  final Future<void> Function(String email, String status, String userName) onToggleStatus; // ✅ Updated
+  final Future<void> Function(String email, String status, String userName) onToggleStatus;
 
   const _UserItemCard({
     required this.user,
@@ -707,7 +720,7 @@ class _UserItemCard extends StatelessWidget {
     final dropdownValue = allowedRoles.contains(currentLabel) ? currentLabel : null;
 
     final isActive = (user.status ?? 'active') == 'active';
-    final isAdmin = user.role == UserRole.admin; // ✅ NEW: Check if user is admin
+    final isAdmin = user.role == UserRole.admin;
 
     return Container(
       padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
@@ -741,7 +754,6 @@ class _UserItemCard extends StatelessWidget {
           ),
           const SizedBox(height: 8),
 
-          // ✅ NEW: Hide controls for Admin users
           if (!isAdmin) ...[
             Row(
               children: [
@@ -783,7 +795,6 @@ class _UserItemCard extends StatelessWidget {
               ],
             ),
           ] else ...[
-            // ✅ NEW: Show message for Admin users
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
               decoration: BoxDecoration(

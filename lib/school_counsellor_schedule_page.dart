@@ -206,6 +206,7 @@ class _SchoolCounsellorSchedulingPageState extends State<SchoolCounsellorSchedul
     final startDt = DateTime(resultDate.year, resultDate.month, resultDate.day, resultStartTod.hour, resultStartTod.minute);
     final endDt   = DateTime(resultDate.year, resultDate.month, resultDate.day, resultEndTod.hour, resultEndTod.minute);
 
+    //_-----------VALIDATE NEW TIMES-----------//
     if (!startDt.isAfter(DateTime.now())) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

@@ -145,7 +145,7 @@ class _SchoolCounsellorMyCounsellorsPageState
               ),
               const SizedBox(height: 16),
 
-              // Live list
+              // Filter active , approved PEER COUNSELLORS
               StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                 stream: appsStream,
                 builder: (context, appSnap) {

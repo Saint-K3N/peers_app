@@ -139,7 +139,7 @@ class _AuthGateState extends State<AuthGate> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Text('Your account is not active. Contact support.'),
+                      const Text('Your account is not active. Contact support at admin@gmail.com OR visit IT Services @ Level 3.'),
                       const SizedBox(height: 12),
                       TextButton(
                         onPressed: () async => FirebaseAuth.instance.signOut(),

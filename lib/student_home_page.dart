@@ -540,7 +540,7 @@ class _AppointmentsListState extends State<_AppointmentsList> {
           builder: (context, snap) {
             if (snap.connectionState == ConnectionState.waiting) return const Padding(padding: EdgeInsets.symmetric(vertical: 12), child: Center(child: CircularProgressIndicator()));
             if (snap.hasError) return Padding(padding: const EdgeInsets.symmetric(vertical: 8), child: Text('Error: ${snap.error}', style: t.bodyMedium?.copyWith(color: Colors.red)));
-
+            // Retrieve Your Appointments Data
             final now = DateTime.now();
             final docs = (snap.data?.docs ?? const [])
                 .where((d) {

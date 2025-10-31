@@ -267,6 +267,7 @@ class _StudentFindHelpPageState extends State<StudentFindHelpPage> {
           totalNonCancelled++;
         }
 
+        //IF INTEREST OVERLAPS
         final overlap =
             helperInterestIds.where((id) => studentIds.contains(id)).length;
         final match = _matchFromOverlap(overlap);
