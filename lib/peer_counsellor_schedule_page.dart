@@ -3,6 +3,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:table_calendar/table_calendar.dart';
+import 'package:intl/intl.dart';
+import 'services/email_notification_service.dart';
 
 class PeerCounsellorSchedulePage extends StatefulWidget {
   const PeerCounsellorSchedulePage({super.key});
@@ -42,20 +44,84 @@ class _PeerCounsellorSchedulePageState extends State<PeerCounsellorSchedulePage>
 
   DateTime _dayKey(DateTime d) => DateTime(d.year, d.month, d.day);
 
-  Future<void> _updateStatus(String id, String status, {String? reason}) async {
-    final updates = <String, dynamic>{
-      'status': status,
-      'updatedAt': FieldValue.serverTimestamp(),
-    };
-    if (status == 'cancelled') {
-      updates['cancellationReason'] = reason ?? 'Peer Counsellor cancelled.';
-      updates['cancelledBy'] = 'counsellor';
-    } else if (status == 'pending_reschedule') {
-      updates['rescheduleReason'] = reason;
-      updates['rescheduledBy'] = 'counsellor';
-    }
+  Future<void> _updateStatus(String id, String status, {String? cancellationReason}) async {
+    try {
+      final updateData = {
+        'status': status,
+        'updatedAt': FieldValue.serverTimestamp(),
+        'proposedStartAt': FieldValue.delete(),
+        'proposedEndAt': FieldValue.delete(),
+        'rescheduleReasonPeer': FieldValue.delete(),
+        'rescheduleReasonStudent': FieldValue.delete(),
+        'rescheduleReasonSC': FieldValue.delete(), // Clear SC reason too
+        if (cancellationReason != null) 'cancellationReason': cancellationReason,
+        if (cancellationReason != null) 'cancelledBy': 'helper',
+      };
 
-    await FirebaseFirestore.instance.collection('appointments').doc(id).update(updates);
+      await FirebaseFirestore.instance.collection('appointments').doc(id).set(
+        updateData,
+        SetOptions(merge: true),
+      );
+
+      // Send email notification for confirm OR cancel action
+      // This single block handles both cases safely for Students AND School Counsellors
+      if (status == 'confirmed' || (status == 'cancelled' && cancellationReason != null)) {
+        try {
+          final apptDoc = await FirebaseFirestore.instance.collection('appointments').doc(id).get();
+          final apptData = apptDoc.data();
+          if (apptData != null) {
+            // CHECK ID TYPE (Safe for SC or Student)
+            final bookerId = apptData['bookerId'] ?? '';
+            final studentId = apptData['studentId'] ?? '';
+            final targetId = (bookerId.toString().isNotEmpty) ? bookerId : studentId;
+            final isSC = (bookerId.toString().isNotEmpty);
+
+            if (targetId.toString().isNotEmpty) {
+              final targetDoc = await FirebaseFirestore.instance.collection('users').doc(targetId).get();
+              final targetData = targetDoc.data();
+              final peerDoc = await FirebaseFirestore.instance.collection('users').doc(_uid).get();
+              final peerData = peerDoc.data();
+
+              if (targetData != null && peerData != null) {
+                final targetEmail = targetData['email'] ?? '';
+                final targetName = targetData['fullName'] ?? targetData['name'] ?? (isSC ? 'School Counsellor' : 'Student');
+                final peerName = peerData['fullName'] ?? peerData['name'] ?? 'Peer Counsellor';
+
+                final sRaw = apptData['startAt'] ?? apptData['start'];
+                final eRaw = apptData['endAt'] ?? apptData['end'];
+                final sDate = (sRaw as Timestamp?)?.toDate();
+                final eDate = (eRaw as Timestamp?)?.toDate();
+
+                final dateStr = sDate != null ? DateFormat('dd/MM/yyyy').format(sDate) : 'Not set';
+                final timeStr = (sDate != null && eDate != null) ? '${DateFormat.jm().format(sDate)} - ${DateFormat.jm().format(eDate)}' : 'Not set';
+
+                if (targetEmail.isNotEmpty) {
+                  if (status == 'confirmed') {
+                    await EmailNotificationService.sendAppointmentConfirmedToStudent(
+                        studentEmail: targetEmail, studentName: targetName, peerName: peerName, peerRole: 'Peer Counsellor',
+                        appointmentDate: dateStr, appointmentTime: timeStr, purpose: apptData['purpose'] ?? 'Counselling'
+                    );
+                  } else {
+                    await EmailNotificationService.sendCancellationToStudent(
+                        studentEmail: targetEmail, studentName: targetName, peerName: peerName, peerRole: 'Peer Counsellor',
+                        appointmentDate: dateStr, appointmentTime: timeStr, reason: cancellationReason!
+                    );
+                  }
+                }
+              }
+            }
+          }
+        } catch (e) { debugPrint('Email Error: $e'); }
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Status updated to $status.')));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to update: $e')));
+      }
+    }
   }
 
   Future<bool> _hasOverlap({
@@ -74,10 +140,12 @@ class _PeerCounsellorSchedulePageState extends State<PeerCounsellorSchedulePage>
       if (excludeId != null && d.id == excludeId) continue;
       final m = d.data();
       final status = (m['status'] ?? '').toString().toLowerCase();
-      if (status != 'pending' && status != 'confirmed') continue;
-      final tsStart = m['startAt'];
-      final tsEnd   = m['endAt'];
+      if (status != 'pending' && status != 'confirmed' && !status.startsWith('pending_reschedule')) continue;
+
+      final tsStart = m['startAt'] ?? m['start'];
+      final tsEnd   = m['endAt'] ?? m['end'];
       if (tsStart is! Timestamp || tsEnd is! Timestamp) continue;
+
       final existingStart = tsStart.toDate();
       final existingEnd   = tsEnd.toDate();
       final overlaps = existingStart.isBefore(endDt) && existingEnd.isAfter(startDt);
@@ -89,12 +157,18 @@ class _PeerCounsellorSchedulePageState extends State<PeerCounsellorSchedulePage>
   Future<void> _reschedule(BuildContext context, String apptId, Map<String,dynamic> m) async {
     final helperId = (m['helperId'] ?? '').toString();
 
-    DateTime start = (m['startAt'] as Timestamp).toDate();
-    DateTime end   = (m['endAt']   as Timestamp).toDate();
+    final origStart = ((m['startAt'] ?? m['start']) as Timestamp?)?.toDate();
+    final origEnd = ((m['endAt'] ?? m['end']) as Timestamp?)?.toDate();
+
+    if (origStart == null || origEnd == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Error: Missing start/end time in data.')));
+      return;
+    }
 
     // Block reschedule if within 24 hours of ORIGINAL start
     final now = DateTime.now();
-    final hoursUntilStart = start.difference(now).inHours;
+    // FIX: Use origStart, not undefined 'start'
+    final hoursUntilStart = origStart.difference(now).inHours;
 
     if (hoursUntilStart <= 24) {
       if (mounted) {
@@ -105,9 +179,10 @@ class _PeerCounsellorSchedulePageState extends State<PeerCounsellorSchedulePage>
       return;
     }
 
-    DateTime date  = _dayKey(start);
-    TimeOfDay startTod = TimeOfDay.fromDateTime(start);
-    TimeOfDay endTod   = TimeOfDay.fromDateTime(end);
+    // FIX: Use origStart/origEnd
+    DateTime date  = _dayKey(origStart);
+    TimeOfDay startTod = TimeOfDay.fromDateTime(origStart);
+    TimeOfDay endTod   = TimeOfDay.fromDateTime(origEnd);
 
     final reasonCtrl = TextEditingController();
 
@@ -253,7 +328,10 @@ class _PeerCounsellorSchedulePageState extends State<PeerCounsellorSchedulePage>
     // Determine if it's a Student or School Counsellor appointment
     final studentId = (m['studentId'] ?? '').toString();
     final schoolCounsellorId = (m['schoolCounsellorId'] ?? '').toString();
+    // Logic to determine target for Email
+    final targetId = schoolCounsellorId.isNotEmpty ? schoolCounsellorId : studentId;
     final createdByRole = schoolCounsellorId.isNotEmpty ? 'school_counsellor' : 'student';
+    final isSC = schoolCounsellorId.isNotEmpty;
 
     // IMPORTANT: Keep original startAt/endAt, store proposed times and wait for confirmation
     await FirebaseFirestore.instance.collection('appointments').doc(apptId).update({
@@ -264,8 +342,38 @@ class _PeerCounsellorSchedulePageState extends State<PeerCounsellorSchedulePage>
       'updatedAt': FieldValue.serverTimestamp(),
     });
 
+    // --- EMAIL LOGIC FOR RESCHEDULE ---
+    try {
+      if (targetId.isNotEmpty) {
+        final targetDoc = await FirebaseFirestore.instance.collection('users').doc(targetId).get();
+        final targetData = targetDoc.data();
+        final peerDoc = await FirebaseFirestore.instance.collection('users').doc(_uid).get();
+        final peerData = peerDoc.data();
+
+        if (targetData != null && peerData != null) {
+          final targetEmail = targetData['email'] ?? '';
+          final targetName = targetData['fullName'] ?? targetData['name'] ?? (isSC ? 'School Counsellor' : 'Student');
+          final peerName = peerData['fullName'] ?? peerData['name'] ?? 'Peer Counsellor';
+
+          if (targetEmail.isNotEmpty) {
+            await EmailNotificationService.sendRescheduleRequestToStudent(
+              studentEmail: targetEmail,
+              studentName: targetName,
+              peerName: peerName,
+              peerRole: 'Peer Counsellor',
+              originalDate: _fmtDateLong(origStart),
+              originalTime: '${_fmtTime(TimeOfDay.fromDateTime(origStart))} - ${_fmtTime(TimeOfDay.fromDateTime(origEnd))}',
+              newDate: _fmtDateLong(startDt),
+              newTime: '${_fmtTime(TimeOfDay.fromDateTime(startDt))} - ${_fmtTime(TimeOfDay.fromDateTime(endDt))}',
+              reason: reason,
+            );
+          }
+        }
+      }
+    } catch (e) { debugPrint('Email failed: $e'); }
+
     if (mounted) {
-      final waitingFor = createdByRole == 'school_counsellor' ? 'School Counsellor' : 'Student';
+      final waitingFor = isSC ? 'School Counsellor' : 'Student';
       ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Reschedule proposed. Waiting for $waitingFor confirmation.'))
       );
@@ -437,7 +545,7 @@ class _PeerCounsellorSchedulePageState extends State<PeerCounsellorSchedulePage>
                   }
 
 
-                  await _updateStatus(id, 'cancelled', reason: reason);
+                  await _updateStatus(id, 'cancelled', cancellationReason: reason);
                 },
 
                 onReschedule: (id, m) => _reschedule(context, id, m),

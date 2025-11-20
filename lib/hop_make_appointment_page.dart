@@ -2,6 +2,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'services/email_notification_service.dart';
 
 
 class HopMakeAppointmentPage extends StatefulWidget {
@@ -336,6 +337,44 @@ class _HopMakeAppointmentPageState extends State<HopMakeAppointmentPage> {
         await col.doc(_appointmentId!).update(appt);
       } else {
         await col.add(appt);
+
+        // Send email notification to tutor about new appointment request (only for new bookings)
+        try {
+          final tutorDoc = await FirebaseFirestore.instance
+              .collection('users')
+              .doc(_helperId)
+              .get();
+
+          final tutorData = tutorDoc.data();
+          if (tutorData != null) {
+            final tutorEmail = tutorData['email'] ?? '';
+            final tutorName = tutorData['fullName'] ?? tutorData['name'] ?? 'Tutor';
+
+            final currentUid = FirebaseAuth.instance.currentUser?.uid ?? '';
+            final hopDoc = await FirebaseFirestore.instance
+                .collection('users')
+                .doc(currentUid)
+                .get();
+
+            final hopData = hopDoc.data();
+            final hopName = hopData?['fullName'] ?? hopData?['name'] ?? 'HOP';
+
+            if (tutorEmail.isNotEmpty && _date != null && _startTime != null && _endTime != null) {
+              await EmailNotificationService.sendNewAppointmentToPeer(
+                peerEmail: tutorEmail,
+                peerName: tutorName,
+                studentName: hopName,
+                studentRole: 'HOP',
+                appointmentDate: '${_date!.day}/${_date!.month}/${_date!.year}',
+                appointmentTime: '${_startTime!.format(context)} - ${_endTime!.format(context)}',
+                purpose: _sessionType ?? 'Not specified',
+              );
+            }
+          }
+        } catch (emailError) {
+          debugPrint('Failed to send email notification: $emailError');
+          // Don't fail the booking if email fails
+        }
       }
 
 
@@ -910,16 +949,16 @@ class _HelperHeader extends StatelessWidget {
             );
           }
           return Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                avatar,
-                const SizedBox(width: 10),
-                Expanded(child: info),
-                if (trailing != null) ...[
-                  const SizedBox(width: 8),
-                  trailing!,
-                ],
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              avatar,
+              const SizedBox(width: 10),
+              Expanded(child: info),
+              if (trailing != null) ...[
+                const SizedBox(width: 8),
+                trailing!,
               ],
+            ],
           );
         });
       },

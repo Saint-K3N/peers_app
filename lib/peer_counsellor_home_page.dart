@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:intl/intl.dart';
+import 'services/email_notification_service.dart';
 
 class PeerCounsellorHomePage extends StatelessWidget {
   const PeerCounsellorHomePage({super.key});
@@ -362,7 +363,6 @@ class _QuickActionsRow extends StatelessWidget {
         icon: Icons.group_add_outlined, label: 'My Peers', route: '/counsellor/peers',
       ),
     ];
-
     return Row(
       children: [
         Expanded(child: _QuickActionTile(item: items[0])),
@@ -545,6 +545,97 @@ class _CounsellorScheduleTile extends StatelessWidget {
         updateData,
         SetOptions(merge: true),
       );
+
+      // Send email notification for confirm action
+      if (status == 'confirmed') {
+        try {
+          final apptDoc = await FirebaseFirestore.instance.collection('appointments').doc(id).get();
+          final apptData = apptDoc.data();
+
+          if (apptData != null) {
+            final studentId = apptData['studentId'] ?? '';
+            final studentDoc = await FirebaseFirestore.instance.collection('users').doc(studentId).get();
+            final studentData = studentDoc.data();
+
+            final peerDoc = await FirebaseFirestore.instance
+                .collection('users')
+                .doc(FirebaseAuth.instance.currentUser?.uid)
+                .get();
+            final peerData = peerDoc.data();
+
+            if (studentData != null && peerData != null) {
+              final studentEmail = studentData['email'] ?? '';
+              final studentName = studentData['fullName'] ?? studentData['name'] ?? 'Student';
+              final peerName = peerData['fullName'] ?? peerData['name'] ?? 'Peer';
+              final peerRole = peerData['role'] ?? 'Peer Counsellor';
+
+              if (studentEmail.isNotEmpty) {
+                final startAt = apptData['startAt'] as Timestamp?;
+                final endAt = apptData['endAt'] as Timestamp?;
+                final purpose = apptData['sessionType'] ?? apptData['purpose'] ?? 'Not specified';
+
+                await EmailNotificationService.sendAppointmentConfirmedToStudent(
+                  studentEmail: studentEmail,
+                  studentName: studentName,
+                  peerName: peerName,
+                  peerRole: peerRole,
+                  appointmentDate: startAt != null ? DateFormat('dd/MM/yyyy').format(startAt.toDate()) : 'Not set',
+                  appointmentTime: (startAt != null && endAt != null)
+                      ? '${DateFormat.jm().format(startAt.toDate())} - ${DateFormat.jm().format(endAt.toDate())}'
+                      : 'Not set',
+                  purpose: purpose,
+                );
+              }
+            }
+          }
+        } catch (emailError) {
+          debugPrint('Failed to send confirmation email: $emailError');
+        }
+      }
+      // Send email notification for cancel action
+      else if (status == 'cancelled' && cancellationReason != null) {
+        try {
+          final apptDoc = await FirebaseFirestore.instance.collection('appointments').doc(id).get();
+          final apptData = apptDoc.data();
+
+          if (apptData != null) {
+            final studentId = apptData['studentId'] ?? '';
+            final studentDoc = await FirebaseFirestore.instance.collection('users').doc(studentId).get();
+            final studentData = studentDoc.data();
+
+            final peerDoc = await FirebaseFirestore.instance
+                .collection('users')
+                .doc(FirebaseAuth.instance.currentUser?.uid)
+                .get();
+            final peerData = peerDoc.data();
+
+            if (studentData != null && peerData != null) {
+              final studentEmail = studentData['email'] ?? '';
+              final studentName = studentData['fullName'] ?? studentData['name'] ?? 'Student';
+              final peerName = peerData['fullName'] ?? peerData['name'] ?? 'Peer';
+
+              if (studentEmail.isNotEmpty) {
+                final startAt = apptData['startAt'] as Timestamp?;
+                final endAt = apptData['endAt'] as Timestamp?;
+
+                await EmailNotificationService.sendCancellationToStudent(
+                  studentEmail: studentEmail,
+                  studentName: studentName,
+                  peerName: peerName,
+                  peerRole: 'Peer Counsellor',
+                  appointmentDate: startAt != null ? DateFormat('dd/MM/yyyy').format(startAt.toDate()) : 'Not set',
+                  appointmentTime: (startAt != null && endAt != null)
+                      ? '${DateFormat.jm().format(startAt.toDate())} - ${DateFormat.jm().format(endAt.toDate())}'
+                      : 'Not set',
+                  reason: cancellationReason,
+                );
+              }
+            }
+          }
+        } catch (emailError) {
+          debugPrint('Failed to send cancellation email: $emailError');
+        }
+      }
 
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Status updated to $status.')));

@@ -9,6 +9,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
+import 'services/email_notification_service.dart';
 
 class AdminReviewApplicationDetailPage extends StatefulWidget {
   final String appId;
@@ -245,6 +246,30 @@ class _AdminReviewApplicationDetailPageState
         );
       }
 
+      // Send email notification to student about admin approval
+      try {
+        if (userId.isNotEmpty) {
+          final studentDoc = await _usersCol.doc(userId).get();
+          final studentData = studentDoc.data();
+
+          if (studentData != null) {
+            final studentEmail = studentData['email'] ?? '';
+            final studentName = studentData['fullName'] ?? studentData['name'] ?? 'Student';
+
+            if (studentEmail.isNotEmpty && requestedRole.isNotEmpty) {
+              await EmailNotificationService.sendAdminApprovalToStudent(
+                studentEmail: studentEmail,
+                studentName: studentName,
+                roleAppliedFor: requestedRole,
+              );
+            }
+          }
+        }
+      } catch (emailError) {
+        debugPrint('Failed to send approval email: $emailError');
+        // Don't fail the approval if email fails
+      }
+
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Application approved. Role updated.')),
@@ -294,6 +319,39 @@ class _AdminReviewApplicationDetailPageState
         'adminDecisionBy': uid,
         'adminReason': _reasonCtrl.text.trim(),
       });
+
+      // Send email notification to student about admin rejection
+      try {
+        final appDoc = await _appsCol.doc(appId).get();
+        final appData = appDoc.data();
+
+        if (appData != null) {
+          final userId = appData['userId'] ?? '';
+          final requestedRole = appData['requestedRole'] ?? 'Peer';
+
+          if (userId.isNotEmpty) {
+            final studentDoc = await _usersCol.doc(userId).get();
+            final studentData = studentDoc.data();
+
+            if (studentData != null) {
+              final studentEmail = studentData['email'] ?? '';
+              final studentName = studentData['fullName'] ?? studentData['name'] ?? 'Student';
+
+              if (studentEmail.isNotEmpty) {
+                await EmailNotificationService.sendAdminRejectionToStudent(
+                  studentEmail: studentEmail,
+                  studentName: studentName,
+                  roleAppliedFor: requestedRole,
+                );
+              }
+            }
+          }
+        }
+      } catch (emailError) {
+        debugPrint('Failed to send rejection email: $emailError');
+        // Don't fail the rejection if email fails
+      }
+
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Application rejected.')),

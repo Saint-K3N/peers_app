@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
+import 'services/email_notification_service.dart';
 
 class PeerBookingInfoPage extends StatelessWidget {
   const PeerBookingInfoPage({super.key});
@@ -74,11 +75,30 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
         return (const Color(0xFFFFF3CD), const Color(0xFF8A6D3B));
       case 'pending_reschedule_peer':
       case 'pending_reschedule_student':
-      case 'pending_reschedule_hop':  // ADD THIS
+      case 'pending_reschedule_hop':
         return (const Color(0xFFFFF3CD), const Color(0xFF8A6D3B));
       default:
         return (const Color(0xFFEDEEF1), const Color(0xFF6B7280));
     }
+  }
+
+  Future<Map<String, String>> _getRecipientDetails(Map<String, dynamic> apptData) async {
+    final bookerId = apptData['bookerId'] ?? '';
+    final studentId = apptData['studentId'] ?? '';
+    // If bookerId exists, it's HOP. Otherwise, it's a Student.
+    final targetId = (bookerId.toString().isNotEmpty) ? bookerId : studentId;
+    final isHop = (bookerId.toString().isNotEmpty);
+
+    if (targetId.toString().isEmpty) return {'email': '', 'name': 'Unknown', 'role': 'Student'};
+
+    final targetDoc = await FirebaseFirestore.instance.collection('users').doc(targetId).get();
+    final targetData = targetDoc.data() ?? {};
+
+    return {
+      'email': targetData['email'] ?? '',
+      'name': targetData['fullName'] ?? targetData['name'] ?? (isHop ? 'HOP' : 'Student'),
+      'role': isHop ? 'Head of Programme' : 'Student',
+    };
   }
 
   // -----------------------------------------------------------------------
@@ -120,24 +140,62 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
   }
 
   // NEW: Confirm Appointment function
-  Future<void> _confirmAppointment(String id) async {
+  Future<void> _confirmAppointment(String id, Map<String, dynamic> m) async {
+    debugPrint("🔵 _confirmAppointment called for id: $id");
     try {
       await FirebaseFirestore.instance.collection('appointments').doc(id).update({
         'status': 'confirmed',
         'updatedAt': FieldValue.serverTimestamp(),
       });
+
+      debugPrint("🟢 Firestore update successful, attempting email");
+      // Send email notification to student about confirmation
+      try {
+        // 1. Get Recipient Safely
+        final recipient = await _getRecipientDetails(m);
+
+        // 2. Get Peer Details
+        final peerDoc = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(FirebaseAuth.instance.currentUser?.uid)
+            .get();
+
+        if (recipient['email']!.isNotEmpty) {
+          final peerName = peerDoc.data()?['fullName'] ?? 'Peer Tutor';
+
+          // 3. Parse Dates (Handle both Student/HOP formats)
+          final sRaw = m['startAt'] ?? m['start'];
+          final eRaw = m['endAt'] ?? m['end'];
+          final s = (sRaw as Timestamp).toDate();
+          final e = (eRaw as Timestamp).toDate();
+
+          await EmailNotificationService.sendAppointmentConfirmedToStudent(
+            studentEmail: recipient['email']!,
+            studentName: recipient['name']!,
+            peerName: peerName,
+            peerRole: 'Peer Tutor',
+            appointmentDate: DateFormat('dd/MM/yyyy').format(s),
+            appointmentTime: '${DateFormat.jm().format(s)} - ${DateFormat.jm().format(e)}',
+            purpose: m['sessionType'] ?? m['purpose'] ?? 'Tutoring',
+          );
+        }
+      } catch (e) { debugPrint('Email error: $e'); }
+
       // Stabilized SnackBar call
       await _showSnackbarSafe('Appointment confirmed.');
+      if (mounted) Navigator.pop(context);
     } catch (e) {
-      // Stabilized SnackBar call
       await _showSnackbarSafe('Failed to confirm: $e');
     }
   }
 
-  // REFACTORED: Cancel function uses 20-char dialog and checks Condition 1
+  // Cancel function uses 20-char dialog and checks Condition 1
   Future<void> _cancelWithReason(String id, DateTime start) async {
+    debugPrint("🔵 _cancelWithReason called for id: $id");
     // Condition 1 check: If confirmed, Peers cannot cancel if <= 24 hours.
     final doc = await FirebaseFirestore.instance.collection('appointments').doc(id).get();
+    final apptData = doc.data();
+    if (apptData == null) return;
     final status = (doc.data()?['status'] ?? '').toString().toLowerCase();
     final isConfirmed = status == 'confirmed';
     final isWithin24Hours = start.difference(DateTime.now()).inHours <= 24;
@@ -171,6 +229,39 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
           'cancelledBy': 'helper',
           'updatedAt': FieldValue.serverTimestamp(),
         });
+
+        debugPrint("🟢 Cancel firestore update successful, attempting email");
+        // Send email notification to student about cancellation
+        try {
+          // 1. Get Recipient Safely (using fresh data)
+          final recipient = await _getRecipientDetails(apptData);
+
+          final peerDoc = await FirebaseFirestore.instance
+              .collection('users')
+              .doc(FirebaseAuth.instance.currentUser?.uid)
+              .get();
+
+          if (recipient['email']!.isNotEmpty) {
+            final sRaw = apptData['startAt'] ?? apptData['start'];
+            final eRaw = apptData['endAt'] ?? apptData['end'];
+            final sDate = (sRaw as Timestamp?)?.toDate();
+            final eDate = (eRaw as Timestamp?)?.toDate();
+
+            await EmailNotificationService.sendCancellationToStudent(
+              studentEmail: recipient['email']!,
+              studentName: recipient['name']!,
+              peerName: peerDoc.data()?['fullName'] ?? 'Peer Tutor',
+              peerRole: 'Peer Tutor',
+              appointmentDate: sDate != null ? _fmtDate(sDate) : 'Not set',
+              appointmentTime: (sDate != null && eDate != null)
+                  ? '${DateFormat.jm().format(sDate)} - ${DateFormat.jm().format(eDate)}'
+                  : 'Not set',
+              reason: reason,
+            );
+          }
+        } catch (e) { debugPrint('Email error: $e'); }
+          // Don't fail the cancellation if email fails
+
         // Stabilized SnackBar call
         await _showSnackbarSafe('Booking cancelled.');
       } catch (e) {
@@ -180,7 +271,7 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
     }
   }
 
-  // NEW: Peer Reschedule function (initiates a change request to the student)
+  // Peer Reschedule function (initiates a change request to the student)
   Future<void> _rescheduleWithReason(String apptId, DateTime currentStart, DateTime currentEnd) async {
     // Condition 1: Reschedule not allowed within 24 hours.
     if (currentStart.difference(DateTime.now()).inHours <= 24) {
@@ -213,6 +304,38 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
         'status': 'pending_reschedule_peer', // Peer-initiated change needs student confirmation
         'updatedAt': FieldValue.serverTimestamp(),
       });
+
+      // Send email notification to student about reschedule request
+      try {
+        // Fetch fresh data to ensure we have IDs
+        final apptDoc = await FirebaseFirestore.instance.collection('appointments').doc(apptId).get();
+        final apptData = apptDoc.data();
+
+        if (apptData != null) {
+          // 1. Get Recipient Safely
+          final recipient = await _getRecipientDetails(apptData);
+
+          final peerDoc = await FirebaseFirestore.instance
+              .collection('users')
+              .doc(FirebaseAuth.instance.currentUser?.uid)
+              .get();
+
+          if (recipient['email']!.isNotEmpty) {
+            await EmailNotificationService.sendRescheduleRequestToStudent(
+              studentEmail: recipient['email']!,
+              studentName: recipient['name']!,
+              peerName: peerDoc.data()?['fullName'] ?? 'Peer Tutor',
+              peerRole: 'Peer Tutor',
+              originalDate: _fmtDate(currentStart),
+              originalTime: '${DateFormat.jm().format(currentStart)} - ${DateFormat.jm().format(currentEnd)}',
+              newDate: _fmtDate(newStart),
+              newTime: '${DateFormat.jm().format(newStart)} - ${DateFormat.jm().format(newEnd)}',
+              reason: reason,
+            );
+          }
+        }
+      } catch (e) { debugPrint('Email error: $e'); }
+        // Don't fail the reschedule if email fail
 
       await _showSnackbarSafe('Reschedule proposed. Waiting for student confirmation.');
     } catch (e) {
@@ -358,8 +481,8 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
                 Builder(
                   builder: (_) {
                     final m = snap.data!.data()!;
-                    final start = (m['startAt'] as Timestamp?)?.toDate();
-                    final end = (m['endAt'] as Timestamp?)?.toDate();
+                    final start = ((m['startAt'] ?? m['start']) as Timestamp?)?.toDate();
+                    final end = ((m['endAt'] ?? m['end']) as Timestamp?)?.toDate();
                     final loc = (m['location'] ?? m['venue'] ?? '').toString();
                     final notes = (m['notes'] ?? '').toString();
                     final statusRaw = (m['status'] ?? 'pending').toString().toLowerCase().trim();
@@ -394,7 +517,7 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
 
 
                     if (hasStart && !isTerminal && !isPast) {
-                      if (isPendingStudentReschedule || isPendingHopReschedule) {  // MODIFY THIS LINE
+                      if (isPendingStudentReschedule || isPendingHopReschedule) {
                         // Special state: Peer must confirm the proposal
                         canConfirm = false;
                         canPeerCancel = true;
@@ -531,15 +654,15 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
                             Wrap(
                               spacing: 8,
                               children: [
-                                // Action: Accept Reschedule (for pending_reschedule_hop)
-                                if (isPendingHopReschedule)  // ADD THIS
+                                // 1. Accept HOP Reschedule
+                                if (isPendingHopReschedule)
                                   FilledButton(
                                     style: FilledButton.styleFrom(backgroundColor: const Color(0xFF2E7D32)),
                                     onPressed: () => _acceptHopReschedule(widget.appointmentId, m),
                                     child: const Text('Accept Reschedule'),
                                   ),
 
-                                // Action: Accept Reschedule (for pending_reschedule_student)
+                                // 2. Accept Student Reschedule
                                 if (isPendingStudentReschedule)
                                   FilledButton(
                                     style: FilledButton.styleFrom(backgroundColor: const Color(0xFF2E7D32)),
@@ -551,14 +674,14 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
                                 if (canConfirm)
                                   FilledButton(
                                     style: FilledButton.styleFrom(backgroundColor: const Color(0xFF2E7D32)),
-                                    onPressed: () => _confirmAppointment(widget.appointmentId),
+                                    onPressed: () => _confirmAppointment(widget.appointmentId, m),
                                     child: const Text('Confirm'),
                                   ),
 
                                 // Action: Reschedule (Only for Condition 2 Confirmed/Pending appointments)
                                 if (canPeerReschedule && start != null && end != null)
                                   FilledButton.tonal(
-                                    onPressed: () => _rescheduleWithReason(widget.appointmentId, start, end),
+                                    onPressed: () => _rescheduleWithReason(widget.appointmentId, start!, end!),
                                     child: const Text('Reschedule'),
                                   ),
 
@@ -566,7 +689,7 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
                                 if (canPeerCancel && start != null)
                                   FilledButton(
                                     style: FilledButton.styleFrom(backgroundColor: Colors.red),
-                                    onPressed: () => _cancelWithReason(widget.appointmentId, start),
+                                    onPressed: () => _cancelWithReason(widget.appointmentId, start!),
                                     child: const Text('Cancel Booking'),
                                   ),
 

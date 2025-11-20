@@ -456,8 +456,7 @@ class _AdminReviewApplicationsPageState
 
                   // Live list from Firestore
                   StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                    stream: _appsCol
-                        .where('requestedRole', isEqualTo: _currentRoleStr)
+                    stream: _appsCol                        .where('requestedRole', isEqualTo: _currentRoleStr)
                         .snapshots(),
                     builder: (context, snap) {
                       if (snap.connectionState == ConnectionState.waiting) {

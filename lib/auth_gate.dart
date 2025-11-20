@@ -135,19 +135,29 @@ class _AuthGateState extends State<AuthGate> {
             if (requireActiveStatus && status != 'active') {
               // Block inactive/disabled accounts
               return Scaffold(
-                body: Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Text('Your account is not active. Contact support at admin@gmail.com OR visit IT Services @ Level 3.'),
-                      const SizedBox(height: 12),
-                      TextButton(
-                        onPressed: () async => FirebaseAuth.instance.signOut(),
-                        child: const Text('Sign out'),
+                  body: Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24.0),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          Text(
+                            'Your account is not active. Contact support at admin@gmail.com OR visit IT Services @ Level 3.',
+                            textAlign: TextAlign.center,
+                            style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                              height: 1.5,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          TextButton(
+                            onPressed: () async => FirebaseAuth.instance.signOut(),
+                            child: const Text('Sign out'),
+                          ),
+                        ],
                       ),
-                    ],
-                  ),
-                ),
+                    ),
+                  )
               );
             }
 

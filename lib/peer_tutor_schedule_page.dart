@@ -3,6 +3,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:table_calendar/table_calendar.dart';
 import 'package:intl/intl.dart';
+import 'services/email_notification_service.dart';
+
 
 class PeerTutorSchedulePage extends StatefulWidget {
   const PeerTutorSchedulePage({super.key});
@@ -43,21 +45,152 @@ class _PeerTutorSchedulePageState extends State<PeerTutorSchedulePage> {
   DateTime _dayKey(DateTime d) => DateTime(d.year, d.month, d.day);
 
   Future<void> _updateStatus(String id, String status, {String? cancellationReason}) async {
-    final updateData = {
-      'status': status,
-      'updatedAt': FieldValue.serverTimestamp(),
-      'proposedStartAt': FieldValue.delete(),
-      'proposedEndAt': FieldValue.delete(),
-      'rescheduleReasonPeer': FieldValue.delete(),
-      'rescheduleReasonHop': FieldValue.delete(),
-      'rescheduleReasonStudent': FieldValue.delete(),
-      if (cancellationReason != null) 'cancellationReason': cancellationReason,
-      if (cancellationReason != null) 'cancelledBy': 'helper',
-    };
-    await FirebaseFirestore.instance.collection('appointments').doc(id).set(
-      updateData,
-      SetOptions(merge: true),
-    );
+    try {
+      final updateData = {
+        'status': status,
+        'updatedAt': FieldValue.serverTimestamp(),
+        'proposedStartAt': FieldValue.delete(),
+        'proposedEndAt': FieldValue.delete(),
+        'rescheduleReasonPeer': FieldValue.delete(),
+        'rescheduleReasonStudent': FieldValue.delete(),
+        'rescheduleReasonHop': FieldValue.delete(),
+        if (cancellationReason != null) 'cancellationReason': cancellationReason,
+        if (cancellationReason != null) 'cancelledBy': 'helper',
+      };
+
+      await FirebaseFirestore.instance.collection('appointments').doc(id).set(
+        updateData,
+        SetOptions(merge: true),
+      );
+
+      // Send email notification for confirm action
+      if (status == 'confirmed' || (status == 'cancelled' && cancellationReason != null)) {
+        try {
+          final apptDoc = await FirebaseFirestore.instance.collection('appointments').doc(id).get();
+          final apptData = apptDoc.data();
+
+          if (apptData != null) {
+            // 1. Determine Recipient (Safe Check)
+            final bookerId = apptData['bookerId'] ?? ''; // HOP ID
+            final studentId = apptData['studentId'] ?? ''; // Student ID
+            final targetId = (bookerId.toString().isNotEmpty) ? bookerId : studentId;
+            final isHop = (bookerId.toString().isNotEmpty);
+
+            // If no ID is found, stop here (prevents crash)
+            if (targetId.toString().isEmpty) {
+              debugPrint('Email skipped: No bookerId or studentId found.');
+              return;
+            }
+
+            final targetDoc = await FirebaseFirestore.instance.collection('users').doc(targetId).get();
+            final targetData = targetDoc.data();
+
+            final peerDoc = await FirebaseFirestore.instance
+                .collection('users')
+                .doc(FirebaseAuth.instance.currentUser?.uid)
+                .get();
+            final peerData = peerDoc.data();
+
+            if (targetData != null && peerData != null) {
+              final targetEmail = targetData['email'] ?? '';
+              final targetName = targetData['fullName'] ?? targetData['name'] ?? (isHop ? 'HOP' : 'Student');
+              final peerName = peerData['fullName'] ?? peerData['name'] ?? 'Peer';
+              final peerRole = peerData['role'] ?? 'Peer Tutor';
+
+              // Helper to get dates safely
+              final sRaw = apptData['startAt'] ?? apptData['start'];
+              final eRaw = apptData['endAt'] ?? apptData['end'];
+              final sDate = (sRaw as Timestamp?)?.toDate();
+              final eDate = (eRaw as Timestamp?)?.toDate();
+
+              final dateStr = sDate != null ? DateFormat('dd/MM/yyyy').format(sDate) : 'Not set';
+              final timeStr = (sDate != null && eDate != null)
+                  ? '${DateFormat.jm().format(sDate)} - ${DateFormat.jm().format(eDate)}'
+                  : 'Not set';
+
+              if (targetEmail.isNotEmpty) {
+                if (status == 'confirmed') {
+                  await EmailNotificationService.sendAppointmentConfirmedToStudent(
+                    studentEmail: targetEmail,
+                    studentName: targetName,
+                    peerName: peerName,
+                    peerRole: peerRole,
+                    appointmentDate: dateStr,
+                    appointmentTime: timeStr,
+                    purpose: apptData['sessionType'] ?? apptData['purpose'] ?? 'Not specified',
+                  );
+                } else if (status == 'cancelled' && cancellationReason != null) {
+                  await EmailNotificationService.sendCancellationToStudent(
+                    studentEmail: targetEmail,
+                    studentName: targetName,
+                    peerName: peerName,
+                    peerRole: peerRole,
+                    appointmentDate: dateStr,
+                    appointmentTime: timeStr,
+                    reason: cancellationReason,
+                  );
+                }
+              }
+            }
+          }
+        } catch (emailError) {
+          debugPrint('Failed to send email: $emailError');
+        }
+      }
+
+      // Send email notification for cancel action
+      else if (status == 'cancelled' && cancellationReason != null) {
+        try {
+          final apptDoc = await FirebaseFirestore.instance.collection('appointments').doc(id).get();
+          final apptData = apptDoc.data();
+
+          if (apptData != null) {
+            final studentId = apptData['studentId'] ?? '';
+            final studentDoc = await FirebaseFirestore.instance.collection('users').doc(studentId).get();
+            final studentData = studentDoc.data();
+
+            final peerDoc = await FirebaseFirestore.instance
+                .collection('users')
+                .doc(FirebaseAuth.instance.currentUser?.uid)
+                .get();
+            final peerData = peerDoc.data();
+
+            if (studentData != null && peerData != null) {
+              final studentEmail = studentData['email'] ?? '';
+              final studentName = studentData['fullName'] ?? studentData['name'] ?? 'Student';
+              final peerName = peerData['fullName'] ?? peerData['name'] ?? 'Peer';
+
+              if (studentEmail.isNotEmpty) {
+                final startAt = apptData['startAt'] as Timestamp?;
+                final endAt = apptData['endAt'] as Timestamp?;
+
+                await EmailNotificationService.sendCancellationToStudent(
+                  studentEmail: studentEmail,
+                  studentName: studentName,
+                  peerName: peerName,
+                  peerRole: 'Peer Tutor',
+                  appointmentDate: startAt != null ? DateFormat('dd/MM/yyyy').format(startAt.toDate()) : 'Not set',
+                  appointmentTime: (startAt != null && endAt != null)
+                      ? '${DateFormat.jm().format(startAt.toDate())} - ${DateFormat.jm().format(endAt.toDate())}'
+                      : 'Not set',
+                  reason: cancellationReason,
+                );
+              }
+            }
+          }
+        } catch (emailError) {
+          debugPrint('Failed to send cancellation email: $emailError');
+        }
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Status updated to $status.')));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to update: $e')));
+      }
+    }
   }
 
   Future<String?> _getReason(BuildContext context, String action) async {
@@ -160,15 +293,15 @@ class _PeerTutorSchedulePageState extends State<PeerTutorSchedulePage> {
     }
 
     final now = DateTime.now();
-    if (origStart.difference(now).inHours <= 24) {
+    // 1. Check 24h Rule
+    if (origStart.difference(DateTime.now()).inHours <= 24) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Reschedule not allowed within 24 hours (Condition 1).')),
-        );
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Reschedule not allowed within 24 hours.')));
       }
       return;
     }
 
+    // 2. Show Dialog
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
       builder: (_) => _RescheduleDialogPeer(currentStart: origStart, currentEnd: origEnd),
@@ -179,7 +312,8 @@ class _PeerTutorSchedulePageState extends State<PeerTutorSchedulePage> {
     final endDt = result['end'];
     final reason = result['reason'];
 
-    if (await _hasOverlap(helperId: helperId, startDt: startDt, endDt: endDt, excludeId: apptId)) {
+    // 3. Check Overlap
+    if (await _hasOverlap(helperId: _uid, startDt: startDt, endDt: endDt, excludeId: apptId)) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Proposed time conflicts with your existing schedule.')));
       }
@@ -195,6 +329,36 @@ class _PeerTutorSchedulePageState extends State<PeerTutorSchedulePage> {
       'rescheduleReasonStudent': FieldValue.delete(),
       'rescheduleReasonHop': FieldValue.delete(),
     }, SetOptions(merge: true));
+
+    // SEND EMAIL
+    try {
+      // Determine Recipient (Safe Check)
+      final bookerId = m['bookerId'] ?? '';
+      final studentId = m['studentId'] ?? '';
+      final targetId = (bookerId.toString().isNotEmpty) ? bookerId : studentId;
+      final isHop = (bookerId.toString().isNotEmpty);
+
+      if (targetId.toString().isNotEmpty) {
+        final targetDoc = await FirebaseFirestore.instance.collection('users').doc(targetId).get();
+        final targetData = targetDoc.data();
+        final peerDoc = await FirebaseFirestore.instance.collection('users').doc(_uid).get();
+        final peerData = peerDoc.data();
+
+        if (targetData != null && peerData != null) {
+          await EmailNotificationService.sendRescheduleRequestToStudent(
+            studentEmail: targetData['email'] ?? '',
+            studentName: targetData['fullName'] ?? targetData['name'] ?? (isHop ? 'HOP' : 'Student'),
+            peerName: peerData['fullName'] ?? peerData['name'] ?? 'Peer',
+            peerRole: peerData['role'] ?? 'Peer Tutor',
+            originalDate: DateFormat('dd/MM/yyyy').format(origStart),
+            originalTime: '${DateFormat.jm().format(origStart)} - ${DateFormat.jm().format(origEnd)}',
+            newDate: DateFormat('dd/MM/yyyy').format(startDt),
+            newTime: '${DateFormat.jm().format(startDt)} - ${DateFormat.jm().format(endDt)}',
+            reason: reason,
+          );
+        }
+      }
+    } catch (e) { debugPrint('Email failed: $e'); }
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Reschedule proposed. Waiting for confirmation.')));

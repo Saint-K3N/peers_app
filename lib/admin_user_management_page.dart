@@ -143,7 +143,32 @@ class _AdminUserManagementPageState extends State<AdminUserManagementPage> {
 
   Future<void> _updateUserRoleByEmail(
       String email, String newRoleLabel) async {
-    if (newRoleLabel != 'HOP' && newRoleLabel != 'School Counsellor') return;
+    // Confirmation dialog before role change
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Change User Role'),
+        content: Text(
+          'Are you sure you want to change this user\'s role to $newRoleLabel?\n\n'
+              'This will update their permissions and access level immediately.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Colors.blue,
+            ),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Confirm Change'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true) return;
 
     final newRoleStored = _storeRole(_labelToRole(newRoleLabel));
     final qs = await FirebaseFirestore.instance
@@ -164,7 +189,7 @@ class _AdminUserManagementPageState extends State<AdminUserManagementPage> {
     }
   }
 
-  /// Toggleable status helper with double confirmation
+  /// ✅ UPDATED: Toggleable status helper with email notification
   Future<void> _setUserStatusByEmail(String email, String status, String userName) async {
     // Double confirmation dialog
     final action = status == 'active' ? 'activate' : 'deactivate';
@@ -194,22 +219,178 @@ class _AdminUserManagementPageState extends State<AdminUserManagementPage> {
 
     if (ok != true) return;
 
-    final qs = await FirebaseFirestore.instance
-        .collection('users')
-        .where('email', isEqualTo: _normEmail(email))
-        .limit(1)
-        .get();
+    try {
+      final qs = await FirebaseFirestore.instance
+          .collection('users')
+          .where('email', isEqualTo: _normEmail(email))
+          .limit(1)
+          .get();
 
-    if (qs.docs.isNotEmpty) {
-      await qs.docs.first.reference.update({
+      if (qs.docs.isEmpty) {
+        throw Exception('User not found');
+      }
+
+      final userDoc = qs.docs.first;
+
+      // Update user status
+      await userDoc.reference.update({
         'status': status,
         'updatedAt': FieldValue.serverTimestamp(),
+        if (status == 'inactive') 'deactivatedAt': FieldValue.serverTimestamp(),
+        if (status == 'inactive') 'deactivatedBy': FirebaseAuth.instance.currentUser?.uid,
       });
+
+      // ✅ NEW: Send email notification if deactivating
+      if (status == 'inactive' && email.isNotEmpty) {
+        await _sendDeactivationEmail(email, userName);
+      }
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              Icon(
+                status == 'active' ? Icons.check_circle : Icons.block,
+                color: Colors.white,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  status == 'active'
+                      ? 'User activated successfully'
+                      : 'User deactivated and notification sent',
+                ),
+              ),
+            ],
+          ),
+          backgroundColor: status == 'active' ? Colors.green : Colors.orange,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to update user status: $e'),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 5),
+        ),
+      );
     }
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('User ${status == 'active' ? 'activated' : 'deactivated'}')),
-    );
+  }
+
+  /// ✅ NEW: Send deactivation email notification
+  Future<void> _sendDeactivationEmail(String userEmail, String userName) async {
+    try {
+      await FirebaseFirestore.instance.collection('mail').add({
+        'to': userEmail,
+        'message': {
+          'subject': 'PEERS Account Deactivated',
+          'html': '''
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <style>
+                body { 
+                  font-family: Arial, sans-serif; 
+                  line-height: 1.6; 
+                  color: #333; 
+                  margin: 0; 
+                  padding: 0; 
+                }
+                .container { 
+                  max-width: 600px; 
+                  margin: 0 auto; 
+                  background: white;
+                }
+                .header { 
+                  background: linear-gradient(135deg, #B388FF, #7C4DFF); 
+                  color: white; 
+                  padding: 30px; 
+                  text-align: center; 
+                }
+                .content { 
+                  padding: 30px; 
+                  background: #f9f9f9; 
+                }
+                .info-box { 
+                  background: white; 
+                  border-left: 4px solid #7C4DFF; 
+                  padding: 15px; 
+                  margin: 20px 0; 
+                }
+                .warning-box {
+                  background: #fff3cd;
+                  border-left: 4px solid #ffc107;
+                  padding: 15px;
+                  margin: 20px 0;
+                }
+                .footer { 
+                  text-align: center; 
+                  padding: 20px; 
+                  color: #666; 
+                  font-size: 12px; 
+                }
+                ul { 
+                  padding-left: 20px; 
+                }
+                li { 
+                  margin: 8px 0; 
+                }
+              </style>
+            </head>
+            <body>
+              <div class="container">
+                <div class="header">
+                  <h1>PEERS</h1>
+                  <p>Peer Education and Emotional Resource System</p>
+                </div>
+                <div class="content">
+                  <h2>Account Deactivated</h2>
+                  <p>Dear $userName,</p>
+                  <p>We're writing to inform you that your PEERS account has been deactivated by an administrator.</p>
+                  
+                  <div class="info-box">
+                    <strong>Account Details:</strong><br>
+                    Email: $userEmail<br>
+                    Status: <span style="color: #d32f2f;">Inactive</span>
+                  </div>
+                  
+                  <div class="warning-box">
+                    <strong>⚠️ What this means:</strong>
+                    <ul style="margin: 10px 0;">
+                      <li>You can no longer access the PEERS platform</li>
+                      <li>All scheduled appointments have been cancelled</li>
+                      <li>Your profile is no longer visible to other users</li>
+                      <li>You cannot make or accept new bookings</li>
+                    </ul>
+                  </div>
+                  
+                  <p><strong>Need Help?</strong></p>
+                  <p>If you believe this is a mistake or would like to request reactivation, please contact support:</p>
+                  <ul>
+                    <li>📧 Email: <a href="mailto:admin@gmail.com">admin@gmail.com</a></li>
+                    <li>🏢 Visit: IT Services @ Level 3</li>
+                  </ul>
+                  
+                  <p>Thank you for your understanding.</p>
+                  <p>Best regards,<br>PEERS Admin Team</p>
+                </div>
+                <div class="footer">
+                  <p>This is an automated message from PEERS.</p>
+                  <p>Please do not reply to this email. Contact support using the details above.</p>
+                </div>
+              </div>
+            </body>
+            </html>
+          ''',
+        },
+      });
+    } catch (e) {
+      // Log error but don't fail the deactivation
+      debugPrint('Failed to send deactivation email: $e');
+    }
   }
 
   Future<void> _logout() async {
@@ -246,97 +427,98 @@ class _AdminUserManagementPageState extends State<AdminUserManagementPage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          'User Management',
-                          style: t.headlineMedium
-                              ?.copyWith(fontWeight: FontWeight.bold),
-                        ),
+                        Text('User Management',
+                            style: t.titleLarge
+                                ?.copyWith(fontWeight: FontWeight.w700)),
                         const SizedBox(height: 2),
-                        Text(
-                          'Admin can set or change each user role here',
-                          style: t.bodySmall,
-                        ),
+                        Text('Manage users in the system',
+                            style: t.bodySmall),
                       ],
                     ),
                   ),
                 ],
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: 16),
 
-              TextField(
-                decoration: InputDecoration(
-                  hintText: 'Search name, ID, or email',
-                  prefixIcon: const Icon(Icons.search),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
+              // Search bar
+              Container(
+                height: 48,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.black12),
                 ),
-                onChanged: (v) =>
-                    setState(() => _search = v.trim().toLowerCase()),
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Row(
+                  children: [
+                    const Icon(Icons.search, color: Colors.black54, size: 20),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: TextField(
+                        decoration: const InputDecoration(
+                          hintText: 'Search by name or ID...',
+                          border: InputBorder.none,
+                        ),
+                        onChanged: (val) => setState(() => _search = val),
+                      ),
+                    ),
+                  ],
+                ),
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 12),
 
-              StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                stream: FirebaseFirestore.instance
-                    .collection('faculties')
-                    .orderBy('nameLower')
-                    .snapshots(),
-                builder: (context, facSnap) {
-                  final facDocs = facSnap.data?.docs ?? const [];
-                  final facultyIdToName = <String, String>{
-                    for (final d in facDocs)
-                      d.id: (d.data()['name'] ?? '').toString()
-                  };
-
-                  final facultyFilterItems = <String>[
-                    'All Faculties',
-                    ...facultyIdToName.values
-                  ];
-
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: _DropdownPill<String>(
-                              value: _selectedRoleFilter,
-                              items: _roleLabelsForFilter,
-                              onChanged: (v) =>
-                                  setState(() => _selectedRoleFilter = v!),
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: _DropdownPill<String>(
-                              value: _selectedFacultyFilter,
-                              items: facultyFilterItems,
-                              onChanged: (v) =>
-                                  setState(() => _selectedFacultyFilter = v!),
-                            ),
-                          ),
-                        ],
+              // Role filter
+              Row(
+                children: [
+                  Text('Filter by role: ', style: t.bodyMedium),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Container(
+                      height: 40,
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        border: Border.all(color: Colors.black26),
+                        borderRadius: BorderRadius.circular(8),
                       ),
-                      const SizedBox(height: 12),
-
-                      _LiveStatsRow(roleLabel: (r) => _roleToLabel(r)),
-
-                      const SizedBox(height: 16),
-                      const _SectionLabel(text: 'Users'),
-                      const SizedBox(height: 10),
-
-                      _UsersFromFirestoreList(
-                        search: _search,
-                        roleFilter: _selectedRoleFilter,
-                        facFilter: _selectedFacultyFilter,
-                        onRoleChange: _updateUserRoleByEmail,
-                        onToggleStatus: _setUserStatusByEmail,
-                        readRole: _readRole,
-                        facultyIdToName: facultyIdToName,
+                      child: DropdownButton<String>(
+                        value: _selectedRoleFilter,
+                        underline: const SizedBox(),
+                        isExpanded: true,
+                        items: _roleLabelsForFilter
+                            .map((e) =>
+                            DropdownMenuItem(value: e, child: Text(e)))
+                            .toList(),
+                        onChanged: (v) =>
+                            setState(() => _selectedRoleFilter = v ?? 'All Roles'),
                       ),
-                    ],
-                  );
-                },
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+
+              // Faculty filter
+              _FacultyDropdown(
+                selectedValue: _selectedFacultyFilter,
+                onChanged: (v) =>
+                    setState(() => _selectedFacultyFilter = v ?? 'All Faculties'),
+              ),
+              const SizedBox(height: 20),
+
+              // Stats row
+              _LiveStatsRow(roleLabel: _roleToLabel),
+              const SizedBox(height: 16),
+
+              // User list
+              _UsersFromFirestoreList(
+                search: _search,
+                selectedRoleFilter: _selectedRoleFilter,
+                selectedFacultyFilter: _selectedFacultyFilter,
+                roleToLabel: _roleToLabel,
+                readRole: _readRole,
+                onRoleChange: _updateUserRoleByEmail,
+                onToggleStatus: _setUserStatusByEmail,
               ),
             ],
           ),
@@ -346,7 +528,7 @@ class _AdminUserManagementPageState extends State<AdminUserManagementPage> {
   }
 }
 
-/* --------------------------------- Widgets -------------------------------- */
+/* ----------------------------- Header with back + logout ----------------------------- */
 
 class _HeaderBar extends StatelessWidget {
   final VoidCallback onBack;
@@ -358,12 +540,26 @@ class _HeaderBar extends StatelessWidget {
     final t = Theme.of(context).textTheme;
     return Row(
       children: [
-        _IconSquare(onTap: onBack, icon: Icons.arrow_back),
+        Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: onBack,
+            borderRadius: BorderRadius.circular(10),
+            child: Ink(
+              height: 36,
+              width: 36,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.black26),
+              ),
+              child: const Icon(Icons.arrow_back, size: 20),
+            ),
+          ),
+        ),
         const SizedBox(width: 10),
-
         Container(
-          height: 44,
-          width: 44,
+          height: 48,
+          width: 48,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(12),
             gradient: const LinearGradient(
@@ -373,16 +569,14 @@ class _HeaderBar extends StatelessWidget {
             ),
           ),
           alignment: Alignment.center,
-          child: Text(
-            'PEERS',
-            style: t.labelMedium?.copyWith(
-              color: Colors.white,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
+          child: Text('PEERS',
+              style: t.labelMedium?.copyWith(
+                color: Colors.white,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.5,
+              )),
         ),
-        const SizedBox(width: 8),
-
+        const SizedBox(width: 12),
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -391,221 +585,217 @@ class _HeaderBar extends StatelessWidget {
                 style: t.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
           ],
         ),
-
         const Spacer(),
-        _IconSquare(onTap: onLogout, icon: Icons.logout),
+        Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: onLogout,
+            borderRadius: BorderRadius.circular(10),
+            child: Ink(
+              height: 36,
+              width: 36,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.black26),
+              ),
+              child: const Icon(Icons.logout, size: 20),
+            ),
+          ),
+        ),
       ],
     );
   }
 }
 
+/* -------------------------- Faculty Dropdown (live from DB) ------------------------- */
 
-class _IconSquare extends StatelessWidget {
-  final VoidCallback onTap;
-  final IconData icon;
-  const _IconSquare({required this.onTap, required this.icon});
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(12),
-        child: Container(
-          width: 44,
-          height: 44,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: Colors.black12),
-          ),
-          alignment: Alignment.center,
-          child: Icon(icon, size: 20),
-        ),
-      ),
-    );
-  }
-}
-
-class _DropdownPill<T> extends StatelessWidget {
-  final T value;
-  final List<T> items;
-  final ValueChanged<T?> onChanged;
-  const _DropdownPill({
-    required this.value,
-    required this.items,
+class _FacultyDropdown extends StatelessWidget {
+  final String selectedValue;
+  final ValueChanged<String?> onChanged;
+  const _FacultyDropdown({
+    required this.selectedValue,
     required this.onChanged,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      height: 44,
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: BoxDecoration(
-        border: Border.all(color: Colors.black26),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: DropdownButton<T>(
-        value: value,
-        underline: const SizedBox(),
-        isExpanded: true,
-        items: items
-            .map((e) => DropdownMenuItem<T>(value: e, child: Text('$e')))
-            .toList(),
-        onChanged: onChanged,
-      ),
+    final t = Theme.of(context).textTheme;
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance.collection('faculties').snapshots(),
+      builder: (context, snap) {
+        final items = <String>['All Faculties'];
+        if (snap.hasData) {
+          for (final d in snap.data!.docs) {
+            final name = (d.data()['name'] ?? '').toString();
+            if (name.isNotEmpty) items.add(name);
+          }
+        }
+        return Row(
+          children: [
+            Text('Filter by faculty: ', style: t.bodyMedium),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Container(
+                height: 40,
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  border: Border.all(color: Colors.black26),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: DropdownButton<String>(
+                  value: items.contains(selectedValue) ? selectedValue : items.first,
+                  underline: const SizedBox(),
+                  isExpanded: true,
+                  items: items
+                      .map((e) => DropdownMenuItem(value: e, child: Text(e)))
+                      .toList(),
+                  onChanged: onChanged,
+                ),
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 }
 
-class _SectionLabel extends StatelessWidget {
-  final String text;
-  const _SectionLabel({required this.text});
+/* ----------------------- Users Firestore Query + Filter ---------------------- */
 
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: 34,
-      alignment: Alignment.centerLeft,
-      padding: const EdgeInsets.symmetric(horizontal: 10),
-      decoration: BoxDecoration(
-        color: Colors.grey.shade200,
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Text(text, style: Theme.of(context).textTheme.labelLarge),
-    );
-  }
-}
-
-/* ----------------------------- Live Users List ----------------------------- */
-
-class _UsersFromFirestoreList extends StatelessWidget {
-  final String search, roleFilter, facFilter;
+class _UsersFromFirestoreList extends StatefulWidget {
+  final String search;
+  final String selectedRoleFilter;
+  final String selectedFacultyFilter;
+  final String Function(UserRole) roleToLabel;
+  final UserRole Function(String?) readRole;
   final Future<void> Function(String email, String newRoleLabel) onRoleChange;
   final Future<void> Function(String email, String status, String userName) onToggleStatus;
-  final UserRole Function(String? s) readRole;
-  final Map<String, String> facultyIdToName;
 
   const _UsersFromFirestoreList({
     required this.search,
-    required this.roleFilter,
-    required this.facFilter,
+    required this.selectedRoleFilter,
+    required this.selectedFacultyFilter,
+    required this.roleToLabel,
+    required this.readRole,
     required this.onRoleChange,
     required this.onToggleStatus,
-    required this.readRole,
-    required this.facultyIdToName,
   });
 
   @override
+  State<_UsersFromFirestoreList> createState() =>
+      _UsersFromFirestoreListState();
+}
+
+class _UsersFromFirestoreListState extends State<_UsersFromFirestoreList> {
+  @override
   Widget build(BuildContext context) {
-    final baseQuery =
-    FirebaseFirestore.instance.collection('users').orderBy('fullName');
+    final t = Theme.of(context).textTheme;
+
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: baseQuery.snapshots(),
+      stream: FirebaseFirestore.instance.collection('users').snapshots(),
       builder: (context, snap) {
-        if (!snap.hasData) {
+        if (snap.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator());
         }
-        final docs = snap.data!.docs;
+        if (snap.hasError) {
+          return Text('Error: ${snap.error}',
+              style: t.bodyMedium?.copyWith(color: Colors.red));
+        }
 
-        List<AppUser> users = docs.map((d) {
-          final data = d.data();
-          final facultyId = (data['facultyId'] ?? '').toString().trim();
-          final facultyName = facultyIdToName[facultyId] ?? '—';
-          return AppUser(
-            uid: d.id,
-            name: (data['fullName'] ?? '') as String,
-            id: (data['studentId'] ?? '') as String,
-            email: (data['email'] ?? '') as String,
-            facultyId: facultyId,
-            facultyName: facultyName,
-            role: readRole(data['role'] as String?),
-            status: (data['status'] ?? 'active') as String?,
+        var users = _buildUserList(snap.data?.docs ?? []);
+        users = _applyFilters(users);
+
+        if (users.isEmpty) {
+          return Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.black12),
+            ),
+            child: const Center(child: Text('No users found')),
           );
-        }).toList();
+        }
 
-        // ✅ FIX: Filter out users who have corresponding Firebase Auth entries
-        // This prevents showing "ghost" users whose Firestore docs exist but Auth accounts don't
-        return FutureBuilder<List<AppUser>>(
-          future: _filterUsersWithValidAuth(users),
-          builder: (context, authFilteredSnap) {
-            if (!authFilteredSnap.hasData) {
-              return const Center(child: CircularProgressIndicator());
-            }
-
-            List<AppUser> filteredUsers = authFilteredSnap.data!;
-
-            // Search Bar - Search
-            final s = search.trim().toLowerCase();
-            filteredUsers = filteredUsers.where((u) {
-              final matchesSearch = s.isEmpty ||
-                  u.name.toLowerCase().contains(s) ||
-                  u.id.toLowerCase().contains(s) ||
-                  u.email.toLowerCase().contains(s);
-              final matchesRole = roleFilter == 'All Roles' ||
-                  _roleToLabelStatic(u.role) == roleFilter;
-              final matchesFac =
-                  facFilter == 'All Faculties' || u.facultyName == facFilter;
-              return matchesSearch && matchesRole && matchesFac;
-            }).toList();
-
-            if (filteredUsers.isEmpty) {
-              return const Text('No users found.');
-            }
-
-            return Column(
-              children: [
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text('Found ${filteredUsers.length} users',
-                      style: Theme.of(context).textTheme.bodySmall),
-                ),
-                const SizedBox(height: 8),
-                for (final u in filteredUsers) ...[
-                  _UserItemCard(
-                    user: u,
-                    onRoleChanged: (label) async {
-                      if (label == null) return;
-                      await onRoleChange(u.email, label);
-                    },
-                    onToggleStatus: onToggleStatus,
-                  ),
-                  const SizedBox(height: 14),
-                ],
-              ],
-            );
-          },
+        return Column(
+          children: [
+            for (final u in users) ...[
+              _UserItemCard(
+                user: u,
+                onRoleChanged: (newLabel) {
+                  if (newLabel != null) {
+                    widget.onRoleChange(u.email, newLabel);
+                  }
+                },
+                onToggleStatus: widget.onToggleStatus,
+              ),
+              const SizedBox(height: 12),
+            ],
+          ],
         );
       },
     );
   }
 
-  // ✅ NEW METHOD: Filter users based on whether their Auth account still exists
-  // This checks if the uid stored in Firestore document actually matches an existing Auth user
-  Future<List<AppUser>> _filterUsersWithValidAuth(List<AppUser> users) async {
-    // Simple approach: Only show users whose Firestore doc has a valid uid field
-    // The uid field should be set during account creation and removed if Auth is deleted
-    return users.where((user) {
-      // Keep users that have a uid field (meaning their Auth account exists)
-      return user.uid != null && user.uid!.isNotEmpty;
+  List<AppUser> _buildUserList(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
+    return docs.map<AppUser>((d) {
+      final data = d.data();
+      return AppUser(
+        name: (data['name'] ?? data['fullName'] ?? 'Unknown').toString(),
+        id: (data['studentId'] ?? data['id'] ?? 'N/A').toString(),
+        email: (data['email'] ?? '').toString(),
+        facultyId: (data['facultyId'] ?? '').toString(),
+        facultyName: (data['faculty'] ?? '').toString(),
+        role: widget.readRole(data['role'] as String?),
+        uid: d.id,
+        status: (data['status'] ?? 'active').toString(),
+      );
     }).toList();
   }
 
-  static String _roleToLabelStatic(UserRole r) {
-    switch (r) {
-      case UserRole.student:
-        return 'Student';
-      case UserRole.peerTutor:
-        return 'Peer Tutor';
-      case UserRole.hop:
-        return 'HOP';
-      case UserRole.peerCounsellor:
-        return 'Peer Counsellor';
-      case UserRole.schoolCounsellor:
-        return 'School Counsellor';
-      case UserRole.admin:
-        return 'Admin';
+  List<AppUser> _applyFilters(List<AppUser> users) {
+    var filtered = users;
+
+    // Search filter
+    if (widget.search.isNotEmpty) {
+      final query = widget.search.toLowerCase();
+      filtered = filtered.where((u) {
+        return u.name.toLowerCase().contains(query) ||
+            u.id.toLowerCase().contains(query);
+      }).toList();
+    }
+
+    // Role filter
+    if (widget.selectedRoleFilter != 'All Roles') {
+      final targetRole = _labelToRole(widget.selectedRoleFilter);
+      filtered = filtered.where((u) => u.role == targetRole).toList();
+    }
+
+    // Faculty filter
+    if (widget.selectedFacultyFilter != 'All Faculties') {
+      filtered = filtered.where((u) => u.facultyName == widget.selectedFacultyFilter).toList();
+    }
+
+    return filtered;
+  }
+
+  UserRole _labelToRole(String label) {
+    switch (label) {
+      case 'Student':
+        return UserRole.student;
+      case 'Peer Tutor':
+        return UserRole.peerTutor;
+      case 'HOP':
+        return UserRole.hop;
+      case 'Peer Counsellor':
+        return UserRole.peerCounsellor;
+      case 'School Counsellor':
+        return UserRole.schoolCounsellor;
+      case 'Admin':
+        return UserRole.admin;
+      default:
+        return UserRole.student;
     }
   }
 }
@@ -711,12 +901,29 @@ class _UserItemCard extends StatelessWidget {
     required this.onToggleStatus,
   });
 
+  String _roleToLabel(UserRole r) {
+    switch (r) {
+      case UserRole.student:
+        return 'Student';
+      case UserRole.peerTutor:
+        return 'Peer Tutor';
+      case UserRole.hop:
+        return 'HOP';
+      case UserRole.peerCounsellor:
+        return 'Peer Counsellor';
+      case UserRole.schoolCounsellor:
+        return 'School Counsellor';
+      case UserRole.admin:
+        return 'Admin';
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final t = Theme.of(context).textTheme;
 
     final allowedRoles = const ['HOP', 'School Counsellor','Student'];
-    final currentLabel = _UsersFromFirestoreList._roleToLabelStatic(user.role);
+    final currentLabel = _roleToLabel(user.role);
     final dropdownValue = allowedRoles.contains(currentLabel) ? currentLabel : null;
 
     final isActive = (user.status ?? 'active') == 'active';

@@ -2,6 +2,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'services/email_notification_service.dart';
+import 'package:intl/intl.dart';
 
 class HopBookingInfoPage extends StatefulWidget {
   const HopBookingInfoPage({super.key});
@@ -345,6 +347,48 @@ class _HopBookingInfoPageState extends State<HopBookingInfoPage> {
       'rescheduleReasonPeer': FieldValue.delete(),
     }, SetOptions(merge: true));
 
+    // Send email notification to peer about reschedule request
+    debugPrint("🔔 Attempting to send reschedule email to peer");
+    try {
+      final apptDoc = await FirebaseFirestore.instance.collection('appointments').doc(apptId).get();
+      final apptData = apptDoc.data();
+
+      if (apptData != null) {
+        final helperId = apptData['helperId'] ?? '';
+        final helperDoc = await FirebaseFirestore.instance.collection('users').doc(helperId).get();
+        final helperData = helperDoc.data();
+
+        final hopDoc = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(FirebaseAuth.instance.currentUser?.uid)
+            .get();
+        final hopData = hopDoc.data();
+
+        if (helperData != null && hopData != null) {
+          final helperEmail = helperData['email'] ?? '';
+          final helperName = helperData['fullName'] ?? helperData['name'] ?? 'Peer';
+          final hopName = hopData['fullName'] ?? hopData['name'] ?? 'HOP';
+
+          if (helperEmail.isNotEmpty) {
+            await EmailNotificationService.sendRescheduleRequestToPeer(
+              peerEmail: helperEmail,
+              peerName: helperName,
+              studentName: hopName,
+              studentRole: 'Head of Programme',
+              originalDate: _fmtDate(origStart),
+              originalTime: '${_fmtTime(TimeOfDay.fromDateTime(origStart))} - ${_fmtTime(TimeOfDay.fromDateTime(origEnd))}',
+              newDate: _fmtDate(startDt),
+              newTime: '${_fmtTime(TimeOfDay.fromDateTime(startDt))} - ${_fmtTime(TimeOfDay.fromDateTime(endDt))}',
+              reason: reason,
+            );
+          }
+        }
+      }
+    } catch (emailError) {
+      debugPrint('Failed to send reschedule email: $emailError');
+      // Don't fail the reschedule if email fails
+    }
+
     if (mounted) {
       ScaffoldMessenger.of(context)
           .showSnackBar(const SnackBar(content: Text('Reschedule proposed. Waiting for peer confirmation.')));
@@ -375,6 +419,49 @@ class _HopBookingInfoPageState extends State<HopBookingInfoPage> {
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
 
+    // Send email notification to peer about reschedule confirmation
+    try {
+      final apptDoc = await FirebaseFirestore.instance.collection('appointments').doc(apptId).get();
+      final apptData = apptDoc.data();
+
+      if (apptData != null) {
+        final helperId = apptData['helperId'] ?? '';
+        final helperDoc = await FirebaseFirestore.instance.collection('users').doc(helperId).get();
+        final helperData = helperDoc.data();
+
+        final hopDoc = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(FirebaseAuth.instance.currentUser?.uid)
+            .get();
+        final hopData = hopDoc.data();
+
+        if (helperData != null && hopData != null) {
+          final helperEmail = helperData['email'] ?? '';
+          final helperName = helperData['fullName'] ?? helperData['name'] ?? 'Peer';
+          final hopName = hopData['fullName'] ?? hopData['name'] ?? 'HOP';
+
+          if (helperEmail.isNotEmpty) {
+            await EmailNotificationService.sendAppointmentConfirmedToPeer(
+              peerEmail: helperEmail,
+              peerName: helperName,
+              studentName: hopName,
+              studentRole: 'Head of Programme',
+              appointmentDate: _fmtDate(propStart.toDate()),
+              appointmentTime: '${_fmtTime(TimeOfDay.fromDateTime(propStart.toDate()))} - ${_fmtTime(TimeOfDay.fromDateTime(propEnd.toDate()))}',
+            );
+          }
+        }
+      }
+    } catch (emailError) {
+      debugPrint('Failed to send confirmation email: $emailError');
+    }
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Reschedule accepted.')),
+      );
+    }
+
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Reschedule accepted.')),
@@ -382,8 +469,7 @@ class _HopBookingInfoPageState extends State<HopBookingInfoPage> {
     }
   }
 
-  Future<void> _cancelExisting(
-      String appointmentId, DateTime startAt, String status) async {
+  Future<void> _cancelExisting(String appointmentId, DateTime startAt, String status) async {
     // HOP can cancel pending or confirmed appointments with reason
     final canCancel = status == 'pending' || status == 'confirmed';
 
@@ -416,6 +502,28 @@ class _HopBookingInfoPageState extends State<HopBookingInfoPage> {
     if (ok == true && mounted) {
       try {
         await _updateStatus(appointmentId, 'cancelled', cancellationReason: reason);
+
+        // Send email notification to peer about cancellation
+        try {
+          final doc = await FirebaseFirestore.instance.collection('appointments').doc(appointmentId).get();
+          final m = doc.data();
+          final helperId = m?['helperId'] ?? m?['tutorId'];
+          if (helperId != null) {
+            final helper = await FirebaseFirestore.instance.collection('users').doc(helperId).get();
+            final hop = await FirebaseFirestore.instance.collection('users').doc(FirebaseAuth.instance.currentUser?.uid).get();
+
+            await EmailNotificationService.sendCancellationToPeer(
+              peerEmail: helper.data()?['email'] ?? '',
+              peerName: helper.data()?['fullName'] ?? 'Peer',
+              studentName: hop.data()?['fullName'] ?? 'HOP',
+              studentRole: 'Head of Programme',
+              appointmentDate: _fmtDate(startAt),
+              appointmentTime: 'See details in app', // Simplification or fetch end time
+              reason: reason,
+            );
+          }
+        } catch (e) { debugPrint('Email error: $e'); }
+
         if (!mounted) return;
         ScaffoldMessenger.of(context)
             .showSnackBar(const SnackBar(content: Text('Appointment cancelled.')));
@@ -493,9 +601,8 @@ class _HopBookingInfoPageState extends State<HopBookingInfoPage> {
               }
 
               final m = snap.data!.data()!;
-              final start = (m['startAt'] as Timestamp?)?.toDate();
-              final end = (m['endAt'] as Timestamp?)?.toDate();
-              final loc = (m['location'] ?? '').toString();
+              final start = ((m['startAt'] ?? m['start']) as Timestamp?)?.toDate();
+              final end = ((m['endAt'] ?? m['end']) as Timestamp?)?.toDate();              final loc = (m['location'] ?? '').toString();
               final notes = (m['notes'] ?? '').toString();
               final statusRaw = (m['status'] ?? 'pending').toString();
               final helperIdFromDoc = (m['helperId'] ?? '').toString().trim();
@@ -524,11 +631,11 @@ class _HopBookingInfoPageState extends State<HopBookingInfoPage> {
               if (hasStart && !isTerminal && start!.isAfter(now)) {
                 if (isPending) {
                   // CONDITION 1 & 2: Pending - can cancel with reason
-                  canCancel = true;
+                  canCancel = false;
                 } else if (isConfirmed) {
                   if (isWithin24Hours) {
                     // CONDITION 1: <= 24h, confirmed - can only cancel
-                    canCancel = true;
+                    canCancel = false;
                   } else {
                     // CONDITION 2: > 24h, confirmed - can reschedule and cancel
                     canCancel = true;

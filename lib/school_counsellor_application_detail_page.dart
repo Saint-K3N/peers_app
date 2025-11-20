@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'services/email_notification_service.dart';
 
 /* ------------------------------- Page ------------------------------- */
 
@@ -146,6 +147,36 @@ class _SchoolCounsellorApplicationDetailPageState
         });
       });
 
+      // Send email notification to student about school counsellor approval
+      try {
+        final appDoc = await _appsCol.doc(widget.appId).get();
+        final appData = appDoc.data();
+
+        if (appData != null) {
+          final studentId = appData['userId'] ?? '';
+          final roleAppliedFor = appData['requestedRole'] ?? 'Peer Counsellor';
+
+          final studentDoc = await _usersCol.doc(studentId).get();
+          final studentData = studentDoc.data();
+
+          if (studentData != null) {
+            final studentEmail = studentData['email'] ?? '';
+            final studentName = studentData['fullName'] ?? studentData['name'] ?? 'Student';
+
+            if (studentEmail.isNotEmpty) {
+              await EmailNotificationService.sendSchoolCounsellorApprovalToStudent(
+                studentEmail: studentEmail,
+                studentName: studentName,
+                roleAppliedFor: roleAppliedFor,
+              );
+            }
+          }
+        }
+      } catch (emailError) {
+        debugPrint('Failed to send approval email: $emailError');
+        // Don't fail the approval if email fails
+      }
+
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Marked as approved by School Counsellor.')),
@@ -178,6 +209,36 @@ class _SchoolCounsellorApplicationDetailPageState
           'schoolCounsellorDecisionBy': uid,
         });
       });
+
+      // Send email notification to student about school counsellor rejection
+      try {
+        final appDoc = await _appsCol.doc(widget.appId).get();
+        final appData = appDoc.data();
+
+        if (appData != null) {
+          final studentId = appData['userId'] ?? '';
+          final roleAppliedFor = appData['requestedRole'] ?? 'Peer Counsellor';
+
+          final studentDoc = await _usersCol.doc(studentId).get();
+          final studentData = studentDoc.data();
+
+          if (studentData != null) {
+            final studentEmail = studentData['email'] ?? '';
+            final studentName = studentData['fullName'] ?? studentData['name'] ?? 'Student';
+
+            if (studentEmail.isNotEmpty) {
+              await EmailNotificationService.sendSchoolCounsellorRejectionToStudent(
+                studentEmail: studentEmail,
+                studentName: studentName,
+                roleAppliedFor: roleAppliedFor,
+              );
+            }
+          }
+        }
+      } catch (emailError) {
+        debugPrint('Failed to send rejection email: $emailError');
+        // Don't fail the rejection if email fails
+      }
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -304,6 +365,9 @@ class _SchoolCounsellorApplicationDetailPageState
                 }
 
                 final scApproved = (app['schoolCounsellorApproved'] ?? null);
+
+                // Check if decision has been made
+                final isDecided = scApproved != null;
 
                 return _ScaffoldWithHeader(
                   title: 'School Counsellor Review',
@@ -468,28 +532,34 @@ class _SchoolCounsellorApplicationDetailPageState
                           Row(
                             children: [
                               Expanded(
-                                child: ElevatedButton(
-                                  onPressed: _working ? null : _scApprove,
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: const Color(0xFF43A047),
-                                    foregroundColor: Colors.white,
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                                    padding: const EdgeInsets.symmetric(vertical: 12),
+                                child: Opacity(
+                                  opacity: isDecided ? 0.4 : 1.0,
+                                  child: ElevatedButton(
+                                    onPressed: (_working || isDecided) ? null : _scApprove,
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: const Color(0xFF43A047),
+                                      foregroundColor: Colors.white,
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                      padding: const EdgeInsets.symmetric(vertical: 12),
+                                    ),
+                                    child: const Text('Approve'),
                                   ),
-                                  child: const Text('Approve'),
                                 ),
                               ),
                               const SizedBox(width: 12),
                               Expanded(
-                                child: ElevatedButton(
-                                  onPressed: _working ? null : _scReject,
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: const Color(0xFFB71C1C),
-                                    foregroundColor: Colors.white,
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                                    padding: const EdgeInsets.symmetric(vertical: 12),
+                                child: Opacity(
+                                  opacity: isDecided ? 0.4 : 1.0,
+                                  child: ElevatedButton(
+                                    onPressed: (_working || isDecided) ? null : _scReject,
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: const Color(0xFFB71C1C),
+                                      foregroundColor: Colors.white,
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                      padding: const EdgeInsets.symmetric(vertical: 12),
+                                    ),
+                                    child: const Text('Reject'),
                                   ),
-                                  child: const Text('Reject'),
                                 ),
                               ),
                             ],

@@ -3,6 +3,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:table_calendar/table_calendar.dart';
+import 'services/email_notification_service.dart';
+import 'package:intl/intl.dart';
 
 class SchoolCounsellorSchedulingPage extends StatefulWidget {
   const SchoolCounsellorSchedulingPage({super.key});
@@ -37,14 +39,24 @@ class _SchoolCounsellorSchedulingPageState extends State<SchoolCounsellorSchedul
 
   DateTime _dayKey(DateTime d) => DateTime(d.year, d.month, d.day);
 
-  Future<void> _updateStatus(String id, String status) async {
-    await FirebaseFirestore.instance.collection('appointments').doc(id).update({
+  // UPDATED: Now handles cancellation reason and clearing reschedule flags
+  Future<void> _updateStatus(String id, String status, {String? cancellationReason}) async {
+    final updateData = {
       'status': status,
       'updatedAt': FieldValue.serverTimestamp(),
-    });
+      // Clear any pending reschedule data if we are changing status
+      'proposedStartAt': FieldValue.delete(),
+      'proposedEndAt': FieldValue.delete(),
+      'rescheduleReasonPeer': FieldValue.delete(),
+      'rescheduleReasonSC': FieldValue.delete(),
+
+      if (cancellationReason != null) 'cancellationReason': cancellationReason,
+      if (cancellationReason != null) 'cancelledBy': 'school_counsellor',
+    };
+
+    await FirebaseFirestore.instance.collection('appointments').doc(id).update(updateData);
   }
 
-  // Keep overlap by helperId so a single counsellor isn't double-booked.
   Future<bool> _hasOverlap({
     required String helperId,
     required DateTime startDt,
@@ -237,6 +249,45 @@ class _SchoolCounsellorSchedulingPageState extends State<SchoolCounsellorSchedul
       'updatedAt': FieldValue.serverTimestamp(),
     });
 
+    // Send email notification to peer about reschedule request
+    try {
+      final apptDoc = await FirebaseFirestore.instance.collection('appointments').doc(apptId).get();
+      final apptData = apptDoc.data();
+
+      if (apptData != null) {
+        final helperDoc = await FirebaseFirestore.instance.collection('users').doc(helperId).get();
+        final helperData = helperDoc.data();
+
+        final scDoc = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(FirebaseAuth.instance.currentUser?.uid)
+            .get();
+        final scData = scDoc.data();
+
+        if (helperData != null && scData != null) {
+          final helperEmail = helperData['email'] ?? '';
+          final helperName = helperData['fullName'] ?? helperData['name'] ?? 'Peer';
+          final scName = scData['fullName'] ?? scData['name'] ?? 'School Counsellor';
+
+          if (helperEmail.isNotEmpty) {
+            await EmailNotificationService.sendRescheduleRequestToPeer(
+              peerEmail: helperEmail,
+              peerName: helperName,
+              studentName: scName,
+              studentRole: 'School Counsellor',
+              originalDate: _fmtDateLong(start),
+              originalTime: '${_fmtTime(TimeOfDay.fromDateTime(start))} - ${_fmtTime(TimeOfDay.fromDateTime(end))}',
+              newDate: _fmtDateLong(startDt),
+              newTime: '${_fmtTime(TimeOfDay.fromDateTime(startDt))} - ${_fmtTime(TimeOfDay.fromDateTime(endDt))}',
+              reason: reason,
+            );
+          }
+        }
+      }
+    } catch (emailError) {
+      debugPrint('Failed to send reschedule email: $emailError');
+    }
+
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Reschedule proposed. Waiting for Peer Counsellor confirmation.')));
     }
@@ -290,12 +341,16 @@ class _SchoolCounsellorSchedulingPageState extends State<SchoolCounsellorSchedul
                 selectedDay: _selectedDay ?? DateTime.now(),
                 fmtDateLong: _fmtDateLong,
                 fmtTime: _fmtTime,
+                // ----------------- CANCELLATION LOGIC -----------------
                 onCancel: (id) async {
                   final doc = await FirebaseFirestore.instance.collection('appointments').doc(id).get();
                   final m = doc.data() ?? {};
                   final ts = m['startAt'];
                   if (ts is! Timestamp) return;
                   final start = ts.toDate();
+                  final end = (m['endAt'] as Timestamp).toDate();
+
+                  // Check 24-hour rule
                   if (start.difference(DateTime.now()) < const Duration(hours: 24)) {
                     if (mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
@@ -304,7 +359,80 @@ class _SchoolCounsellorSchedulingPageState extends State<SchoolCounsellorSchedul
                     }
                     return;
                   }
-                  await _updateStatus(id, 'cancelled');
+
+                  // 1. Show Reason Dialog
+                  final _reasonCtrl = TextEditingController();
+                  final reason = await showDialog<String>(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        title: const Text('Cancel Appointment'),
+                        content: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Text('Please provide a reason (max 20 characters):'),
+                            const SizedBox(height: 12),
+                            TextField(
+                              controller: _reasonCtrl,
+                              decoration: const InputDecoration(
+                                  hintText: 'Reason',
+                                  border: OutlineInputBorder(),
+                                  counterText: ''
+                              ),
+                              maxLength: 20,
+                              maxLines: 2,
+                            )
+                          ],
+                        ),
+                        actions: [
+                          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
+                          FilledButton(
+                              style: FilledButton.styleFrom(backgroundColor: Colors.red),
+                              onPressed: () {
+                                if (_reasonCtrl.text.trim().isEmpty) {
+                                  ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(content: Text('Reason required.')));
+                                  return;
+                                }
+                                Navigator.pop(ctx, _reasonCtrl.text.trim());
+                              },
+                              child: const Text('Confirm Cancel')
+                          ),
+                        ],
+                      )
+                  );
+
+                  if (reason == null || reason.isEmpty) return;
+
+                  // 2. Update Firestore
+                  await _updateStatus(id, 'cancelled', cancellationReason: reason);
+
+                  // 3. Send Email to Peer Counsellor (Helper)
+                  try {
+                    final helperId = m['helperId'] ?? m['tutorId'];
+                    if (helperId != null) {
+                      final helperDoc = await FirebaseFirestore.instance.collection('users').doc(helperId).get();
+                      final scDoc = await FirebaseFirestore.instance.collection('users').doc(_uid).get();
+
+                      final helperEmail = helperDoc.data()?['email'] ?? '';
+                      final helperName = helperDoc.data()?['fullName'] ?? helperDoc.data()?['name'] ?? 'Peer';
+                      final scName = scDoc.data()?['fullName'] ?? scDoc.data()?['name'] ?? 'School Counsellor';
+
+                      if (helperEmail.isNotEmpty) {
+                        await EmailNotificationService.sendCancellationToPeer(
+                            peerEmail: helperEmail,
+                            peerName: helperName,
+                            studentName: scName,
+                            studentRole: 'School Counsellor',
+                            appointmentDate: _fmtDateLong(start),
+                            appointmentTime: '${_fmtTime(TimeOfDay.fromDateTime(start))} - ${_fmtTime(TimeOfDay.fromDateTime(end))}',
+                            reason: reason
+                        );
+                      }
+                    }
+                  } catch (e) {
+                    debugPrint("Email error: $e");
+                  }
+
+                  if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Appointment Cancelled.')));
                 },
                 onReschedule: (id, m) => _reschedule(context, id, m),
               ),

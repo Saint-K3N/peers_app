@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'dart:math' as math;
+import 'services/email_notification_service.dart';
 class SchoolCounsellorMakeAppointmentPage extends StatefulWidget {
   const SchoolCounsellorMakeAppointmentPage({super.key});
 
@@ -292,6 +293,44 @@ class _SchoolCounsellorMakeAppointmentPageState
       };
 
       await FirebaseFirestore.instance.collection('appointments').add(appt);
+
+      // Send email notification to peer counsellor about new appointment request
+      try {
+        final counsellorDoc = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(helperId)
+            .get();
+
+        final counsellorData = counsellorDoc.data();
+        if (counsellorData != null) {
+          final counsellorEmail = counsellorData['email'] ?? '';
+          final counsellorName = counsellorData['fullName'] ?? counsellorData['name'] ?? 'Counsellor';
+
+          final currentScUser = FirebaseAuth.instance.currentUser;
+          final scDoc = await FirebaseFirestore.instance
+              .collection('users')
+              .doc(currentScUser?.uid ?? '')
+              .get();
+
+          final scData = scDoc.data();
+          final scName = scData?['fullName'] ?? scData?['name'] ?? 'School Counsellor';
+
+          if (counsellorEmail.isNotEmpty) {
+            await EmailNotificationService.sendNewAppointmentToPeer(
+              peerEmail: counsellorEmail,
+              peerName: counsellorName,
+              studentName: scName,
+              studentRole: 'School Counsellor',
+              appointmentDate: _fmtDate(_date!),
+              appointmentTime: '${_fmtTime(_startTime!)} - ${_fmtTime(_endTime!)}',
+              purpose: _sessionType ?? 'Not specified',
+            );
+          }
+        }
+      } catch (emailError) {
+        debugPrint('Failed to send email notification: $emailError');
+        // Don't fail the booking if email fails
+      }
 
       if (!mounted) return;
       _msg('Booked successfully.');

@@ -3,6 +3,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'services/email_notification_service.dart';
+
 
 class StudentMakeAppointmentPage extends StatefulWidget {
   const StudentMakeAppointmentPage({super.key});
@@ -242,6 +244,43 @@ class _StudentMakeAppointmentPageState extends State<StudentMakeAppointmentPage>
       };
 
       await FirebaseFirestore.instance.collection('appointments').add(appt);
+
+      // Send email notification to peer about new appointment request
+      try {
+        final helperDoc = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(helperId)
+            .get();
+
+        final helperData = helperDoc.data();
+        if (helperData != null) {
+          final helperEmail = helperData['email'] ?? '';
+          final helperName = helperData['fullName'] ?? helperData['name'] ?? 'Peer';
+
+          final studentDoc = await FirebaseFirestore.instance
+              .collection('users')
+              .doc(student.uid)
+              .get();
+
+          final studentData = studentDoc.data();
+          final studentName = studentData?['fullName'] ?? studentData?['name'] ?? 'Student';
+
+          if (helperEmail.isNotEmpty) {
+            await EmailNotificationService.sendNewAppointmentToPeer(
+              peerEmail: helperEmail,
+              peerName: helperName,
+              studentName: studentName,
+              studentRole: 'Student',
+              appointmentDate: _fmtDate(_date!),
+              appointmentTime: '${_fmtTime(_startTime!)} - ${_fmtTime(_endTime!)}',
+              purpose: _sessionType ?? 'Not specified',
+            );
+          }
+        }
+      } catch (emailError) {
+        debugPrint('Failed to send email notification: $emailError');
+        // Don't fail the booking if email fails
+      }
 
       if (!mounted) return;
       _msg('Booked successfully.');

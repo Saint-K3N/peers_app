@@ -88,6 +88,49 @@ class _SchoolCounsellorMyCounsellorsPageState
     extends State<SchoolCounsellorMyCounsellorsPage> {
   String _query = '';
   String get _uid => FirebaseAuth.instance.currentUser?.uid ?? '';
+
+  Future<void> _removeCounsellor(BuildContext context, String counsellorId) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Remove Counsellor'),
+        content: const Text('Are you sure you want to remove this counsellor from your list?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true || !context.mounted) return;
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(counsellorId)
+          .update({'role': 'student', 'status': 'active'});
+
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Counsellor removed successfully')),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to remove: $e')),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final t = Theme.of(context).textTheme;
@@ -207,6 +250,7 @@ class _SchoolCounsellorMyCounsellorsPageState
                         counsellorUid: counsellorUid,
                         interestsIds: interestsIds,
                         query: _query,
+                        onRemove: () => _removeCounsellor(context, counsellorUid),
                       );
                     }).toList(),
                   );
@@ -314,11 +358,13 @@ class _CounsellorTile extends StatelessWidget {
   final String counsellorUid;
   final List<dynamic> interestsIds;
   final String query;
+  final VoidCallback onRemove;
 
   const _CounsellorTile({
     required this.counsellorUid,
     required this.interestsIds,
     required this.query,
+    required this.onRemove,
   });
 
   Future<(_UserBits, List<String>, DateTime?)> _load() async {
@@ -377,13 +423,7 @@ class _CounsellorTile extends StatelessWidget {
               arguments: {'counsellorId': counsellorUid, 'name': name},
             );
           },
-          onRemove: () {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('Remove is not supported for approved counsellors.'),
-              ),
-            );
-          },
+          onRemove: onRemove,
         );
       },
     );

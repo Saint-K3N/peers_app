@@ -1,8 +1,9 @@
 // lib/peer_counsellor_booking_info_page.dart
 import 'package:flutter/material.dart';
+import 'services/email_notification_service.dart';
+import 'package:intl/intl.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:intl/intl.dart';
 
 class PeerCounsellorBookingInfoPage extends StatelessWidget {
   const PeerCounsellorBookingInfoPage({super.key});
@@ -33,8 +34,30 @@ class _PeerCounsellorBookingInfoBody extends StatefulWidget {
       _PeerCounsellorBookingInfoBodyState();
 }
 
-class _PeerCounsellorBookingInfoBodyState
-    extends State<_PeerCounsellorBookingInfoBody> {
+class _PeerCounsellorBookingInfoBodyState extends State<_PeerCounsellorBookingInfoBody> {
+  Future<void> _showSnackbarSafe(String message) async {
+    // Wait for build to finish to avoid errors
+    await Future.delayed(Duration.zero);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  // 2. Fixes "Method '_pickString' isn't defined"
+  String _pickString(Map<String, dynamic> m, List<String> keys) {
+    for (final k in keys) {
+      final v = m[k];
+      if (v is String && v.trim().isNotEmpty) return v.trim();
+    }
+    final p = m['profile'];
+    if (p is Map<String, dynamic>) {
+      for (final k in keys) {
+        final v = p[k];
+        if (v is String && v.trim().isNotEmpty) return v.trim();
+      }
+    }
+    return '';
+  }
+
   String _fmtDate(DateTime d) => DateFormat('dd/MM/yyyy').format(d);
 
   String _fmtTime(TimeOfDay t) {
@@ -84,23 +107,24 @@ class _PeerCounsellorBookingInfoBodyState
   }
 
   // Helper to pick strings from user doc
-  String _pickString(Map<String, dynamic> m, List<String> keys) {
-    for (final k in keys) {
-      final v = m[k];
-      if (v is String && v
-          .trim()
-          .isNotEmpty) return v.trim();
-    }
-    final prof = m['profile'];
-    if (prof is Map<String, dynamic>) {
-      for (final k in keys) {
-        final v = prof[k];
-        if (v is String && v
-            .trim()
-            .isNotEmpty) return v.trim();
-      }
-    }
-    return '';
+  Future<Map<String, String>> _getRecipientDetails(Map<String, dynamic> apptData) async {
+    final bookerId = apptData['bookerId'] ?? '';
+    final studentId = apptData['studentId'] ?? '';
+
+    // If bookerId exists, it's School Counsellor (SC). Otherwise, it's a Student.
+    final targetId = (bookerId.toString().isNotEmpty) ? bookerId : studentId;
+    final isSC = (bookerId.toString().isNotEmpty);
+
+    if (targetId.toString().isEmpty) return {'email': '', 'name': 'Unknown', 'role': 'Student'};
+
+    final targetDoc = await FirebaseFirestore.instance.collection('users').doc(targetId).get();
+    final targetData = targetDoc.data() ?? {};
+
+    return {
+      'email': targetData['email'] ?? '',
+      'name': targetData['fullName'] ?? targetData['name'] ?? (isSC ? 'School Counsellor' : 'Student'),
+      'role': isSC ? 'School Counsellor' : 'Student',
+    };
   }
 
   // Helper to resolve topic IDs to titles
@@ -187,39 +211,50 @@ class _PeerCounsellorBookingInfoBodyState
   }
 
   // Confirm Appointment function
-  Future<void> _confirmAppointment(String id) async {
+  Future<void> _confirmAppointment(String id, Map<String, dynamic> m) async {
     try {
-      await FirebaseFirestore.instance
-          .collection('appointments')
-          .doc(id)
-          .update({
+      await FirebaseFirestore.instance.collection('appointments').doc(id).update({
         'status': 'confirmed',
         'updatedAt': FieldValue.serverTimestamp(),
-        'proposedStartAt': FieldValue.delete(),
-        'proposedEndAt': FieldValue.delete(),
-        'rescheduleReasonPeer': FieldValue.delete(),
-        'rescheduleReasonStudent': FieldValue.delete(),
       });
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Appointment confirmed.')),
-        );
-      }
+
+      // Email Logic
+      try {
+        final recipient = await _getRecipientDetails(m);
+        final peerDoc = await FirebaseFirestore.instance.collection('users').doc(FirebaseAuth.instance.currentUser?.uid).get();
+
+        if (recipient['email']!.isNotEmpty) {
+          final sRaw = m['startAt'] ?? m['start'];
+          final eRaw = m['endAt'] ?? m['end'];
+          final s = (sRaw as Timestamp).toDate();
+          final e = (eRaw as Timestamp).toDate();
+
+          await EmailNotificationService.sendAppointmentConfirmedToStudent(
+            studentEmail: recipient['email']!,
+            studentName: recipient['name']!,
+            peerName: peerDoc.data()?['fullName'] ?? 'Peer Counsellor',
+            peerRole: 'Peer Counsellor',
+            appointmentDate: _fmtDate(s),
+            appointmentTime: '${_fmtTime(TimeOfDay.fromDateTime(s))} - ${_fmtTime(TimeOfDay.fromDateTime(e))}',
+            purpose: m['sessionType'] ?? m['purpose'] ?? 'Counselling',
+          );
+        }
+      } catch (e) { debugPrint('Email error: $e'); }
+
+      await _showSnackbarSafe('Appointment confirmed.');
+      if (mounted) Navigator.pop(context);
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to confirm: $e')),
-        );
-      }
+      await _showSnackbarSafe('Failed to confirm: $e');
     }
   }
 
   // Cancel function with 20-char dialog and Condition 1 check
   Future<void> _cancelWithReason(String id, DateTime start) async {
     // Condition 1 check: If confirmed, Peers cannot cancel if <= 24 hours.
-    final doc = await FirebaseFirestore.instance.collection('appointments').doc(
-        id).get();
-    final status = (doc.data()?['status'] ?? '').toString().toLowerCase();
+    final doc = await FirebaseFirestore.instance.collection('appointments').doc(id).get();
+    final apptData = doc.data();
+    if (apptData == null) return;
+    final status = (apptData['status'] ?? '').toString().toLowerCase();
     final isConfirmed = status == 'confirmed';
     final hoursUntilStart = start
         .difference(DateTime.now())
@@ -270,6 +305,31 @@ class _PeerCounsellorBookingInfoBodyState
           'rescheduleReasonPeer': FieldValue.delete(),
           'rescheduleReasonStudent': FieldValue.delete(),
         });
+
+        // Send email notification to student/school counsellor about cancellation
+        debugPrint("🔔 Attempting to send cancellation email to student/SC");
+        try {
+          final recipient = await _getRecipientDetails(apptData);
+          final peerDoc = await FirebaseFirestore.instance.collection('users').doc(FirebaseAuth.instance.currentUser?.uid).get();
+
+          if (recipient['email']!.isNotEmpty) {
+            final sRaw = apptData['startAt'] ?? apptData['start'];
+            final eRaw = apptData['endAt'] ?? apptData['end'];
+            final sDate = (sRaw as Timestamp?)?.toDate();
+            final eDate = (eRaw as Timestamp?)?.toDate();
+
+            await EmailNotificationService.sendCancellationToStudent(
+              studentEmail: recipient['email']!,
+              studentName: recipient['name']!,
+              peerName: peerDoc.data()?['fullName'] ?? 'Peer Counsellor',
+              peerRole: 'Peer Counsellor',
+              appointmentDate: sDate != null ? _fmtDate(sDate) : 'Not set',
+              appointmentTime: (sDate != null && eDate != null) ? '${_fmtTime(TimeOfDay.fromDateTime(sDate))} - ${_fmtTime(TimeOfDay.fromDateTime(eDate))}' : 'Not set',
+              reason: reason,
+            );
+          }
+        } catch (e) { debugPrint('Email error: $e'); }
+
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Booking cancelled.')),
@@ -288,13 +348,8 @@ class _PeerCounsellorBookingInfoBodyState
   // Peer Reschedule function (initiates a change request to the student)
   Future<void> _rescheduleWithReason(String apptId, DateTime currentStart, DateTime currentEnd, String createdByRole) async {
     // Condition 1 & 2: Reschedule not allowed within 24 hours.
-    final hoursUntilStart = currentStart
-        .difference(DateTime.now())
-        .inHours;
-    if (hoursUntilStart <= 24) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text(
-              'Reschedule not allowed within 24 hours (Condition 1).')));
+    if (currentStart.difference(DateTime.now()).inHours <= 24) {
+      await _showSnackbarSafe('Reschedule not allowed within 24 hours.');
       return;
     }
 
@@ -335,6 +390,31 @@ class _PeerCounsellorBookingInfoBodyState
         'status': 'pending_reschedule_peer',
         'updatedAt': FieldValue.serverTimestamp(),
       });
+
+      // Send email notification to student/school counsellor about reschedule request
+      debugPrint("🔔 Attempting to send reschedule email to student/SC");
+      try {
+        final apptDoc = await FirebaseFirestore.instance.collection('appointments').doc(apptId).get();
+        final apptData = apptDoc.data();
+        if (apptData != null) {
+          final recipient = await _getRecipientDetails(apptData);
+          final peerDoc = await FirebaseFirestore.instance.collection('users').doc(FirebaseAuth.instance.currentUser?.uid).get();
+
+          if (recipient['email']!.isNotEmpty) {
+            await EmailNotificationService.sendRescheduleRequestToStudent(
+              studentEmail: recipient['email']!,
+              studentName: recipient['name']!,
+              peerName: peerDoc.data()?['fullName'] ?? 'Peer Counsellor',
+              peerRole: 'Peer Counsellor',
+              originalDate: _fmtDate(currentStart),
+              originalTime: '${_fmtTime(TimeOfDay.fromDateTime(currentStart))} - ${_fmtTime(TimeOfDay.fromDateTime(currentEnd))}',
+              newDate: _fmtDate(newStart),
+              newTime: '${_fmtTime(TimeOfDay.fromDateTime(newStart))} - ${_fmtTime(TimeOfDay.fromDateTime(newEnd))}',
+              reason: reason,
+            );
+          }
+        }
+      } catch (e) { debugPrint('Email error: $e'); }
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(
@@ -436,8 +516,7 @@ class _PeerCounsellorBookingInfoBodyState
   }
 
   // NEW: Accept Reschedule initiated by School Counsellor
-  Future<void> _acceptSCReschedule(String apptId,
-      Map<String, dynamic> m) async {
+  Future<void> _acceptSCReschedule(String apptId, Map<String, dynamic> m) async {
     final helperId = (m['helperId'] ?? '').toString();
     final newStartTs = m['proposedStartAt'] as Timestamp?;
     final newEndTs = m['proposedEndAt'] as Timestamp?;
@@ -605,8 +684,8 @@ class _PeerCounsellorBookingInfoBodyState
                   Builder(
                     builder: (_) {
                       final m = snap.data!.data()!;
-                      final start = (m['startAt'] as Timestamp?)?.toDate();
-                      final end = (m['endAt'] as Timestamp?)?.toDate();
+                      final start = ((m['startAt'] ?? m['start']) as Timestamp?)?.toDate();
+                      final end = ((m['endAt'] ?? m['end']) as Timestamp?)?.toDate();
 
                       // Proposed times (if rescheduling)
                       final proposedStart = (m['proposedStartAt'] as Timestamp?)
@@ -1020,7 +1099,7 @@ class _PeerCounsellorBookingInfoBodyState
                                                     0xFF2E7D32)),
                                             onPressed: () =>
                                                 _confirmAppointment(
-                                                    widget.appointmentId),
+                                                    widget.appointmentId, m),
                                             child: const Text('Confirm'),
                                           ),
 

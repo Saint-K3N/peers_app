@@ -486,6 +486,7 @@ class _TabSwitcher extends StatelessWidget {
   }
 }
 
+//Search Box
 class _SearchField extends StatelessWidget {
   final String hint;
   final ValueChanged<String> onChanged;

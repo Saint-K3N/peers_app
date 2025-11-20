@@ -6,6 +6,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
+import 'services/email_notification_service.dart';
 
 class HopReviewApplicationDetailPage extends StatefulWidget {
   final String appId;
@@ -184,6 +185,36 @@ class _HopReviewApplicationDetailPageState
         'hopDecisionBy': uid,
       });
 
+      // Send email notification to student about HOP approval
+      try {
+        final appDoc = await _appsCol.doc(appId).get();
+        final appData = appDoc.data();
+
+        if (appData != null) {
+          final studentId = appData['userId'] ?? '';
+          final roleAppliedFor = appData['requestedRole'] ?? 'Peer Tutor';
+
+          final studentDoc = await _usersCol.doc(studentId).get();
+          final studentData = studentDoc.data();
+
+          if (studentData != null) {
+            final studentEmail = studentData['email'] ?? '';
+            final studentName = studentData['fullName'] ?? studentData['name'] ?? 'Student';
+
+            if (studentEmail.isNotEmpty) {
+              await EmailNotificationService.sendHopApprovalToStudent(
+                studentEmail: studentEmail,
+                studentName: studentName,
+                roleAppliedFor: roleAppliedFor,
+              );
+            }
+          }
+        }
+      } catch (emailError) {
+        debugPrint('Failed to send approval email: $emailError');
+        // Don't fail the approval if email fails
+      }
+
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Marked as HOP Approve. Forwarded to Admin.')),
@@ -208,6 +239,37 @@ class _HopReviewApplicationDetailPageState
         'hopDecisionAt': FieldValue.serverTimestamp(),
         'hopDecisionBy': uid,
       });
+
+      // Send email notification to student about HOP rejection
+      try {
+        final appDoc = await _appsCol.doc(appId).get();
+        final appData = appDoc.data();
+
+        if (appData != null) {
+          final studentId = appData['userId'] ?? '';
+          final roleAppliedFor = appData['requestedRole'] ?? 'Peer Tutor';
+
+          final studentDoc = await _usersCol.doc(studentId).get();
+          final studentData = studentDoc.data();
+
+          if (studentData != null) {
+            final studentEmail = studentData['email'] ?? '';
+            final studentName = studentData['fullName'] ?? studentData['name'] ?? 'Student';
+
+            if (studentEmail.isNotEmpty) {
+              await EmailNotificationService.sendHopRejectionToStudent(
+                studentEmail: studentEmail,
+                studentName: studentName,
+                roleAppliedFor: roleAppliedFor,
+              );
+            }
+          }
+        }
+      } catch (emailError) {
+        debugPrint('Failed to send rejection email: $emailError');
+        // Don't fail the rejection if email fails
+      }
+
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Marked as HOP Rejected.')),

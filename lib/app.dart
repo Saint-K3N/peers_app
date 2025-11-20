@@ -139,7 +139,7 @@ class MyApp extends StatelessWidget {
         '/counsellor/home': (_) => const SchoolCounsellorHomePage(),
         '/counsellor/review-apps': (_) => const SchoolCounsellorReviewApplicationsPage(),
         '/school_counsellor/detail_page': (_) => const SchoolCounsellorDetailPage(),
-        '/school-counsellor//appointment': (_) => const SchoolCounsellorMakeAppointmentPage(),
+        '/school-counsellor/appointment': (_) => const SchoolCounsellorMakeAppointmentPage(),
         '/school-counsellor/scheduling': (_) => const SchoolCounsellorSchedulingPage(),
         '/counsellor/review/detail': (context) {
           final appId = ModalRoute.of(context)!.settings.arguments as String;

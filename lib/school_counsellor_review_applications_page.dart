@@ -132,7 +132,7 @@ class _SchoolCounsellorReviewApplicationsPageState
               _Header(onLogout: _logout),
               const SizedBox(height: 16),
 
-              Text('Review Applications',
+              Text('Counsellor Review Applications',
                   style: t.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
               const SizedBox(height: 4),
               Text('Approve or reject peer counsellor applications', // (text tweak)
