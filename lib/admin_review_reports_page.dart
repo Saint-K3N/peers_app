@@ -20,6 +20,7 @@ class _AdminReviewReportsPageState extends State<AdminReviewReportsPage> {
     super.dispose();
   }
 
+  // To format Date/Time into readable string (12th October 2021)
   String _prettyDate(DateTime d) {
     const months = [
       '', 'January', 'February', 'March', 'April', 'May', 'June',
@@ -343,7 +344,7 @@ class _ReportCard extends StatelessWidget {
     required this.prettyDate,
   });
 
-  /// ✅ UPDATED: Toggle deactivate with email notification
+  /// Toggle deactivate with email notification
   Future<void> _toggleDeactivate(BuildContext context) async {
     final data = reportDoc.data();
     final reportedUserId = (data['reportedUserId'] ?? '').toString();
@@ -413,7 +414,7 @@ class _ReportCard extends StatelessWidget {
         if (newStatus == 'inactive') 'deactivatedBy': FirebaseAuth.instance.currentUser?.uid,
       });
 
-      // ✅ NEW: Update report status if deactivating
+      // Update report status if deactivating
       if (newStatus == 'inactive') {
         final adminUid = FirebaseAuth.instance.currentUser?.uid ?? 'system';
         await reportDoc.reference.set({
@@ -469,7 +470,7 @@ class _ReportCard extends StatelessWidget {
     }
   }
 
-  /// ✅ NEW: Send deactivation email for report-based action
+  /// Send deactivation email for report-based action
   Future<void> _sendReportDeactivationEmail(
       String userEmail,
       String userName,
@@ -537,7 +538,6 @@ class _ReportCard extends StatelessWidget {
               <div class="container">
                 <div class="header">
                   <h1>PEERS</h1>
-                  <p>Peer Education and Emotional Resource System</p>
                 </div>
                 <div class="content">
                   <h2>Account Deactivated</h2>

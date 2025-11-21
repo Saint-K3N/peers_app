@@ -40,7 +40,7 @@ class _AdminReviewApplicationDetailPageState
   }
 
   /* ----------------------------- Helpers ----------------------------- */
-
+  // Fetches the user document to get profile details like email and name.
   Future<Map<String, dynamic>?> _getUser(String uid) async {
     if (uid.isEmpty) return null;
     try {
@@ -55,6 +55,7 @@ class _AdminReviewApplicationDetailPageState
     if (ids == null || ids.isEmpty) return const <String>[];
     final idStrs = ids.map((e) => e.toString()).toList();
 
+    // Uses chunking (10 items per query) to satisfy Firestore's 'whereIn' limit.
     final chunks = <List<String>>[];
     for (var i = 0; i < idStrs.length; i += 10) {
       chunks.add(idStrs.sublist(i, (i + 10 > idStrs.length) ? idStrs.length : i + 10));
@@ -79,6 +80,7 @@ class _AdminReviewApplicationDetailPageState
     return titles;
   }
 
+  /// Robustly extracts the display name from user data, checking multiple key variations.
   String _readName(Map<String, dynamic>? u) {
     String pick(Map<String, dynamic>? m, List<String> keys) {
       if (m == null) return '';
@@ -143,6 +145,7 @@ class _AdminReviewApplicationDetailPageState
     }
   }
 
+  /// Returns a tuple of colors (Border, Badge Background, Badge Text) based on the status.
   (Color border, Color badgeBg, Color badgeFg) _statusColors(String s) {
     switch (s.toLowerCase()) {
       case 'approved':
@@ -201,7 +204,7 @@ class _AdminReviewApplicationDetailPageState
   /* ------------------------ Approve / Reject / Delete ----------------------- */
 
   Future<void> _approve(String appId, Map<String, dynamic> app) async {
-    // ✅ NEW: Double confirmation prompt
+    // Double confirmation prompt
     final userName = _readName(await _getUser((app['userId'] ?? '').toString()));
     final ok = await showDialog<bool>(
       context: context,
@@ -285,7 +288,7 @@ class _AdminReviewApplicationDetailPageState
   }
 
   Future<void> _reject(String appId) async {
-    // ✅ NEW: Double confirmation prompt
+    // Double confirmation prompt
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
@@ -367,7 +370,7 @@ class _AdminReviewApplicationDetailPageState
   }
 
   Future<void> _delete(String appId) async {
-    // ✅ ENHANCED: More explicit double confirmation
+    // More explicit double confirmation
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
@@ -478,7 +481,7 @@ class _AdminReviewApplicationDetailPageState
                 final (borderClr, badgeBg, badgeFg) = _statusColors(statusRaw);
                 final motivation = (app['motivation'] ?? '').toString();
 
-                // ✅ NEW: Check if already decided
+                // Check if already decided
                 final isApproved = statusRaw.toLowerCase() == 'approved';
                 final isRejected = statusRaw.toLowerCase() == 'rejected';
                 final isDecided = isApproved || isRejected;

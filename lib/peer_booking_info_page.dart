@@ -1,5 +1,6 @@
 // lib/peer_booking_info_page.dart
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:intl/intl.dart';
@@ -490,6 +491,7 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
                     final (chipBg, chipFg) = _statusColors(statusRaw);
                     final studentId = (m['studentId'] ?? '').toString();
                     final bookerId = (m['bookerId'] ?? '').toString();
+                    final meetingLink = (m['meetingLink'] ?? '').toString();
 
                     final cancellationReason = (m['cancellationReason'] ?? '').toString().trim();
                     final rescheduleReasonPeer = (m['rescheduleReasonPeer'] ?? '').toString().trim();
@@ -625,6 +627,34 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
                             ],
                           ),
                         ),
+                        // Display meeting link if online appointment
+                        if (meetingLink.isNotEmpty) ...[
+                          const SizedBox(height: 8),
+                          _FieldShell(
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: GestureDetector(
+                                    onTap: () async {
+                                      // Copy link to clipboard
+                                      await Clipboard.setData(ClipboardData(text: meetingLink));
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(content: Text('Meeting link copied to clipboard')),
+                                      );
+                                    },
+                                    child: Text(
+                                      meetingLink,
+                                      style: t.bodyMedium?.copyWith(color: Colors.blue, decoration: TextDecoration.underline),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ),
+                                const Icon(Icons.video_call_outlined, color: Colors.blue),
+                              ],
+                            ),
+                          ),
+                        ],
+
                         const SizedBox(height: 12),
 
                         Container(
@@ -690,7 +720,7 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
                                   FilledButton(
                                     style: FilledButton.styleFrom(backgroundColor: Colors.red),
                                     onPressed: () => _cancelWithReason(widget.appointmentId, start!),
-                                    child: const Text('Cancel Booking'),
+                                    child: const Text('Cancel'),
                                   ),
 
                                 // Action: Class Outcome (Only after start time and not terminal)
@@ -698,12 +728,12 @@ class _PeerBookingInfoBodyState extends State<_PeerBookingInfoBody> {
                                   FilledButton(
                                     style: FilledButton.styleFrom(backgroundColor: const Color(0xFF2E7D32)),
                                     onPressed: () => _markCompleted(widget.appointmentId),
-                                    child: const Text('Class delivered'),
+                                    child: const Text('Delivered'),
                                   ),
                                   FilledButton(
                                     style: FilledButton.styleFrom(backgroundColor: const Color(0xFF8A6D3B)),
                                     onPressed: () => _markMissed(widget.appointmentId),
-                                    child: const Text('Class missed'),
+                                    child: const Text('Missed'),
                                   ),
                                 ],
                               ],

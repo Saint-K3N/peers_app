@@ -59,6 +59,7 @@ class PeerApplication {
     }
   }
 
+  /// Generates a readable App Code (e.g., APP-PT-A1B2C3) if one doesn't exist.
   static String _deriveCode(String? appCode, AppType t, String docId) {
     if (appCode != null && appCode.trim().isNotEmpty) return appCode;
     final role = t == AppType.peerTutor ? 'PT' : 'PC';

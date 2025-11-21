@@ -123,9 +123,16 @@ class _SchoolCounsellorMakeAppointmentPageState
     }
   }
 
+  // Generates a unique Jitsi Meet link for online appointments
+  String _generateJitsiMeetLink() {
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final randomSuffix = math.Random().nextInt(999999).toString().padLeft(6, '0');
+    final roomName = 'PEERS-Meeting-$timestamp-$randomSuffix';
+    return 'https://meet.jit.si/$roomName';
+  }
+
   void _msg(String m) =>
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
-
 
   Future<bool> _hasOverlap({
     required String helperId,
@@ -254,6 +261,12 @@ class _SchoolCounsellorMakeAppointmentPageState
         helperFacultyId = hFacultyId.trim();
       }
 
+      // Generate Jitsi Meet link for online appointments
+      String? meetingLink;
+      if (_mode == 'online') {
+        meetingLink = _generateJitsiMeetLink();
+      }
+
       final now = DateTime.now();
       final location =
       _mode == 'online' ? 'Online (Video Call)' : (_venue ?? 'Campus');
@@ -290,6 +303,7 @@ class _SchoolCounsellorMakeAppointmentPageState
         'createdByRole': 'school_counsellor',
         'createdAt': Timestamp.fromDate(now),
         'updatedAt': Timestamp.fromDate(now),
+        'meetingLink': meetingLink, // Store Jitsi Meet link for online appointments
       };
 
       await FirebaseFirestore.instance.collection('appointments').add(appt);

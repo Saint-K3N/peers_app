@@ -4,6 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'services/email_notification_service.dart';
+import 'package:flutter/services.dart';
 
 class SchoolCounsellorBookingInfoPage extends StatefulWidget {
   const SchoolCounsellorBookingInfoPage({super.key});
@@ -470,6 +471,7 @@ class _SchoolCounsellorBookingInfoPageState extends State<SchoolCounsellorBookin
               final proposedEnd = (m['proposedEndAt'] as Timestamp?)?.toDate();
 
               final loc = (m['location'] ?? '').toString();
+              final meetingLink = (m['meetingLink'] ?? '').toString();
               final notes = (m['notes'] ?? '').toString();
               final statusRaw = (m['status'] ?? 'pending').toString();
               final helperIdFromDoc = (m['helperId'] ?? '').toString();
@@ -653,6 +655,32 @@ class _SchoolCounsellorBookingInfoPageState extends State<SchoolCounsellorBookin
                       ],
                     ),
                   ),
+                  // Display meeting link if online appointment
+                  if (meetingLink.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    _FieldShell(
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: GestureDetector(
+                              onTap: () async {
+                                await Clipboard.setData(ClipboardData(text: meetingLink));
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('Meeting link copied to clipboard')),
+                                );
+                              },
+                              child: Text(
+                                meetingLink,
+                                style: t.bodyMedium?.copyWith(color: Colors.blue, decoration: TextDecoration.underline),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ),
+                          const Icon(Icons.video_call_outlined, color: Colors.blue),
+                        ],
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 12),
 
                   // Notes (read-only)

@@ -189,7 +189,7 @@ class _AdminUserManagementPageState extends State<AdminUserManagementPage> {
     }
   }
 
-  /// ✅ UPDATED: Toggleable status helper with email notification
+  /// Toggleable status helper with email notification
   Future<void> _setUserStatusByEmail(String email, String status, String userName) async {
     // Double confirmation dialog
     final action = status == 'active' ? 'activate' : 'deactivate';
@@ -240,7 +240,7 @@ class _AdminUserManagementPageState extends State<AdminUserManagementPage> {
         if (status == 'inactive') 'deactivatedBy': FirebaseAuth.instance.currentUser?.uid,
       });
 
-      // ✅ NEW: Send email notification if deactivating
+      // Send email notification if deactivating
       if (status == 'inactive' && email.isNotEmpty) {
         await _sendDeactivationEmail(email, userName);
       }
@@ -280,7 +280,7 @@ class _AdminUserManagementPageState extends State<AdminUserManagementPage> {
     }
   }
 
-  /// ✅ NEW: Send deactivation email notification
+  /// Send deactivation email notification
   Future<void> _sendDeactivationEmail(String userEmail, String userName) async {
     try {
       await FirebaseFirestore.instance.collection('mail').add({
@@ -344,7 +344,6 @@ class _AdminUserManagementPageState extends State<AdminUserManagementPage> {
               <div class="container">
                 <div class="header">
                   <h1>PEERS</h1>
-                  <p>Peer Education and Emotional Resource System</p>
                 </div>
                 <div class="content">
                   <h2>Account Deactivated</h2>

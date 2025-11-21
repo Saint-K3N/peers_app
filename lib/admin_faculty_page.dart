@@ -20,6 +20,7 @@ class FacultyItem {
     required this.description,
   });
 
+  // Factory constructor that creates a [FacultyItem] instance from a Firestore
   factory FacultyItem.fromDoc(DocumentSnapshot<Map<String, dynamic>> d) {
     final data = d.data() ?? {};
     return FacultyItem(
@@ -30,6 +31,7 @@ class FacultyItem {
     );
   }
 
+  // Converts the [FacultyItem] object into a [Map] suitable for uploading to Firestore.
   Map<String, dynamic> toMap() => {
     'name': name,
     'approverUid': approverUid,
@@ -72,6 +74,7 @@ class _AdminFacultyPageState extends State<AdminFacultyPage> {
 
   /* -------------------------- User helpers -------------------------- */
 
+  // Asynchronously fetches a specific user document by their [uid] from the 'users' collection.
   Future<Map<String, dynamic>?> _getUser(String uid) async {
     if (uid.isEmpty) return null;
     try {
@@ -82,6 +85,7 @@ class _AdminFacultyPageState extends State<AdminFacultyPage> {
     }
   }
 
+  // It checks multiple common key variations (e.g., 'fullName', 'givenName', 'profile.name')
   String _readName(Map<String, dynamic>? u) {
     if (u == null) return '';
     String pick(Map<String, dynamic>? m, List<String> keys) {
@@ -121,6 +125,7 @@ class _AdminFacultyPageState extends State<AdminFacultyPage> {
 
   /* ------------------------------ Actions ------------------------------ */
 
+  // Validates the form and adds a new Faculty document to Firestore.
   Future<void> _addFaculty() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -154,6 +159,7 @@ class _AdminFacultyPageState extends State<AdminFacultyPage> {
     }
   }
 
+  // Opens a dialog to edit an existing [FacultyItem].
   Future<void> _editFaculty(FacultyItem item) async {
     final nameCtrl = TextEditingController(text: item.name);
     final descCtrl = TextEditingController(text: item.description);
@@ -215,7 +221,7 @@ class _AdminFacultyPageState extends State<AdminFacultyPage> {
   }
 
   Future<void> _deleteFaculty(FacultyItem f) async {
-    // ✅ ENHANCED: More explicit double confirmation with warnings
+    // More explicit double confirmation with warnings
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
@@ -266,7 +272,7 @@ class _AdminFacultyPageState extends State<AdminFacultyPage> {
   }
 
   /* --------------------------------- Build -------------------------------- */
-
+  // Opens a dialog to edit an existing [FacultyItem].
   @override
   Widget build(BuildContext context) {
     final t = Theme.of(context).textTheme;

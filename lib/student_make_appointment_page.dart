@@ -4,6 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'services/email_notification_service.dart';
+import 'dart:math' as math;
 
 
 class StudentMakeAppointmentPage extends StatefulWidget {
@@ -24,10 +25,13 @@ class _StudentMakeAppointmentPageState extends State<StudentMakeAppointmentPage>
   String _mode = 'online'; // 'online' | 'physical'
   String? _venue; // required if _mode == 'physical'
   final List<String> _venueOptions = const [
-    'Campus - Level 3',
-    'Campus - Level 5',
+    'Campus - Level 2 ',
+    'Campus - Level 3 Cubicles',
+    'Campus - Level 4 Cubicles',
+    'Campus - Level 5 ',
+    'Campus - Level 6 ',
     'Library - Discussion Room',
-    'Student Centre',
+    'Campus - Rooftop',
   ];
 
   final _notesCtrl = TextEditingController();
@@ -52,6 +56,7 @@ class _StudentMakeAppointmentPageState extends State<StudentMakeAppointmentPage>
     return DateFormat('dd/MM/yyyy').format(d);
   }
 
+  // Formats a TimeOfDay object to 12-hour format with AM/PM
   String _fmtTime(TimeOfDay t) {
     // This format is independent of timezone and represents the time of day.
     final now = DateTime.now();
@@ -59,15 +64,18 @@ class _StudentMakeAppointmentPageState extends State<StudentMakeAppointmentPage>
     return DateFormat.jm().format(dt); // e.g., 5:08 PM
   }
 
+  // Combines a date and time into a single DateTime object
   DateTime _combine(DateTime date, TimeOfDay tod) =>
       DateTime(date.year, date.month, date.day, tod.hour, tod.minute);
 
+  // Rounds up a DateTime to the next 15-minute interval
   DateTime _ceilToQuarter(DateTime dt) {
     final add = (15 - (dt.minute % 15)) % 15;
     final rounded = DateTime(dt.year, dt.month, dt.day, dt.hour, dt.minute + add);
     return rounded.isAfter(dt) ? rounded : rounded.add(const Duration(minutes: 15));
   }
 
+  // Opens date picker dialog for user to select appointment date
   Future<void> _pickDate() async {
     final now = DateTime.now();
     final picked = await showDatePicker(
@@ -97,11 +105,13 @@ class _StudentMakeAppointmentPageState extends State<StudentMakeAppointmentPage>
     }
   }
 
+  // Checks if a given date is today
   bool _isToday(DateTime d) {
     final n = DateTime.now();
     return d.year == n.year && d.month == n.month && d.day == n.day;
   }
 
+  // Returns initial time for the time picker based on whether it's start or end time
   TimeOfDay _initialTimeFor(bool isStart) {
     final now = DateTime.now();
     if (_date != null && _isToday(_date!)) {
@@ -113,6 +123,7 @@ class _StudentMakeAppointmentPageState extends State<StudentMakeAppointmentPage>
     return (isStart ? _startTime : _endTime) ?? TimeOfDay.now();
   }
 
+  // Opens time picker dialog for user to select start or end time
   Future<void> _pickTime(bool isStart) async {
     final picked = await showTimePicker(
       context: context,
@@ -137,6 +148,7 @@ class _StudentMakeAppointmentPageState extends State<StudentMakeAppointmentPage>
     }
   }
 
+  // Displays a snackbar message to the user
   void _msg(String m) =>
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
 
@@ -166,6 +178,15 @@ class _StudentMakeAppointmentPageState extends State<StudentMakeAppointmentPage>
     return false;
   }
 
+  // Generates a unique Jitsi Meet link for online appointments
+  String _generateJitsiMeetLink() {
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final randomSuffix = math.Random().nextInt(999999).toString().padLeft(6, '0');
+    final roomName = 'PEERS-Meeting-$timestamp-$randomSuffix';
+    return 'https://meet.jit.si/$roomName';
+  }
+
+  // Main booking function - validates inputs and creates appointment in Firestore
   Future<void> _book() async {
     if (_saving) return;
 
@@ -223,6 +244,12 @@ class _StudentMakeAppointmentPageState extends State<StudentMakeAppointmentPage>
         return;
       }
 
+      // Generate Jitsi Meet link for online appointments
+      String? meetingLink;
+      if (_mode == 'online') {
+        meetingLink = _generateJitsiMeetLink();
+      }
+
       final location =
       _mode == 'online' ? 'Online (Google Meet)' : (_venue ?? 'Campus');
 
@@ -237,6 +264,7 @@ class _StudentMakeAppointmentPageState extends State<StudentMakeAppointmentPage>
         'mode': _mode,
         'venue': _mode == 'physical' ? _venue : null,
         'location': location,
+        'meetingLink': meetingLink, // Store Jitsi Meet link
         'notes': _notesCtrl.text.trim(),
         'status': 'pending',
         'createdAt': Timestamp.now(),

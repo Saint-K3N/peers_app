@@ -3,7 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'services/email_notification_service.dart';
-
+import 'dart:math' as math;
 
 class HopMakeAppointmentPage extends StatefulWidget {
   const HopMakeAppointmentPage({super.key});
@@ -139,6 +139,14 @@ class _HopMakeAppointmentPageState extends State<HopMakeAppointmentPage> {
       debugPrint('Error fetching booker info: $e');
     }
     return {'name': name, 'role': role, 'facultyId': facultyId};
+  }
+
+  // Generates a unique Jitsi Meet link for online appointments
+  String _generateJitsiMeetLink() {
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    final randomSuffix = math.Random().nextInt(999999).toString().padLeft(6, '0');
+    final roomName = 'PEERS-Meeting-$timestamp-$randomSuffix';
+    return 'https://meet.jit.si/$roomName';
   }
 
 
@@ -293,10 +301,14 @@ class _HopMakeAppointmentPageState extends State<HopMakeAppointmentPage> {
     try {
       setState(() => _saving = true);
 
-      // No overlap check as it was missing from the new code, but retaining the old structure
-      // final conflict = await _hasOverlap(...) // <- Omitted
 
       final bookerInfo = await _getBookerInfo(); // <-- FETCH HOP INFO
+
+      // Generate Jitsi Meet link for online appointments
+      String? meetingLink;
+      if (_mode == 'online') {
+        meetingLink = _generateJitsiMeetLink();
+      }
 
       // Use the cached helper info (resolved in the build method's StreamBuilder)
       final location =
@@ -329,8 +341,8 @@ class _HopMakeAppointmentPageState extends State<HopMakeAppointmentPage> {
         'status': 'pending', // NEW LOGIC: always pending
         'createdByRole': 'hop',
         'createdAt': FieldValue.serverTimestamp(),
+        'meetingLink': meetingLink, //Store meeting link
       };
-
       final col = FirebaseFirestore.instance.collection('appointments');
 
       if (_appointmentId != null) {

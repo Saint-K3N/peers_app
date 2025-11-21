@@ -4,6 +4,7 @@ import 'services/email_notification_service.dart';
 import 'package:intl/intl.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/services.dart';
 
 class PeerCounsellorBookingInfoPage extends StatelessWidget {
   const PeerCounsellorBookingInfoPage({super.key});
@@ -707,6 +708,8 @@ class _PeerCounsellorBookingInfoBodyState extends State<_PeerCounsellorBookingIn
                         return v.isNotEmpty ? v : 'Campus';
                       }();
 
+                      final meetingLink = (m['meetingLink'] ?? '').toString();
+
                       final sessionType = 'Counselling';
 
                       final notes = (m['notes'] ?? '').toString();
@@ -1013,8 +1016,33 @@ class _PeerCounsellorBookingInfoBodyState extends State<_PeerCounsellorBookingIn
                                     ],
                                   ),
                                 ),
+                                // Display meeting link if online appointment
+                                if (meetingLink.isNotEmpty) ...[
+                                  const SizedBox(height: 8),
+                                  _FieldShell(
+                                    child: Row(
+                                      children: [
+                                        Expanded(
+                                          child: GestureDetector(
+                                            onTap: () async {
+                                              await Clipboard.setData(ClipboardData(text: meetingLink));
+                                              ScaffoldMessenger.of(context).showSnackBar(
+                                                const SnackBar(content: Text('Meeting link copied to clipboard')),
+                                              );
+                                            },
+                                            child: Text(
+                                              meetingLink,
+                                              style: t.bodyMedium?.copyWith(color: Colors.blue, decoration: TextDecoration.underline),
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ),
+                                        ),
+                                        const Icon(Icons.video_call_outlined, color: Colors.blue),
+                                      ],
+                                    ),
+                                  ),
+                                ],
                                 const SizedBox(height: 12),
-
 
                                 Container(
                                   height: 160,

@@ -20,7 +20,7 @@ class HelperProfile {
   final String name;
   final String faculty;           // resolved faculty title
   final String email;
-  final String bio;               // ** NEW: user's about/bio text
+  final String bio;               // user's about/bio text
   final List<String> specializes; // interest titles
   final int sessions;             // total (non-cancelled) appointments
   final MatchLevel match;
@@ -196,6 +196,7 @@ class _StudentFindHelpPageState extends State<StudentFindHelpPage> {
     return '';
   }
 
+  // Determine match level from interest overlap count
   MatchLevel _matchFromOverlap(int overlap) {
     if (overlap >= 2) return MatchLevel.best;
     if (overlap == 1) return MatchLevel.good;
@@ -788,6 +789,7 @@ class _HelperCard extends StatelessWidget {
     final t = Theme.of(context).textTheme;
     const borderClr = Color(0xFFDDE6FF);
 
+    // Highlight match level
     final (chipText, chipBg, chipFg) = switch (p.match) {
       MatchLevel.best => ('Best Match', const Color(0xFFC9F2D9), const Color(0xFF1B5E20)),
       MatchLevel.good => ('Good Match', const Color(0xFFFCE8C1), const Color(0xFF6D4C00)),

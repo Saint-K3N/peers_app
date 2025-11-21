@@ -4,6 +4,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'services/email_notification_service.dart';
 import 'package:intl/intl.dart';
+import 'package:flutter/services.dart';
 
 class HopBookingInfoPage extends StatefulWidget {
   const HopBookingInfoPage({super.key});
@@ -603,6 +604,7 @@ class _HopBookingInfoPageState extends State<HopBookingInfoPage> {
               final m = snap.data!.data()!;
               final start = ((m['startAt'] ?? m['start']) as Timestamp?)?.toDate();
               final end = ((m['endAt'] ?? m['end']) as Timestamp?)?.toDate();              final loc = (m['location'] ?? '').toString();
+              final meetingLink = (m['meetingLink'] ?? '').toString();
               final notes = (m['notes'] ?? '').toString();
               final statusRaw = (m['status'] ?? 'pending').toString();
               final helperIdFromDoc = (m['helperId'] ?? '').toString().trim();
@@ -748,6 +750,32 @@ class _HopBookingInfoPageState extends State<HopBookingInfoPage> {
                       ],
                     ),
                   ),
+                  // Display meeting link if online appointment
+                  if (meetingLink.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    _FieldShell(
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: GestureDetector(
+                              onTap: () async {
+                                await Clipboard.setData(ClipboardData(text: meetingLink));
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('Meeting link copied to clipboard')),
+                                );
+                              },
+                              child: Text(
+                                meetingLink,
+                                style: t.bodyMedium?.copyWith(color: Colors.blue, decoration: TextDecoration.underline),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ),
+                          const Icon(Icons.video_call_outlined, color: Colors.blue),
+                        ],
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 12),
 
                   Container(
