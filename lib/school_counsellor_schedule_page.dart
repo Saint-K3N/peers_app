@@ -595,10 +595,10 @@ class _CalendarArea extends StatelessWidget {
               onPageChanged: onPageChanged,
               onDaySelected: onDaySelected,
               headerStyle: const HeaderStyle(formatButtonVisible: false, titleCentered: true),
-              calendarBuilders: CalendarBuilders(
+              calendarBuilders: CalendarBuilders( //Passing the count to the calendar
                 defaultBuilder: (context, day, focused) {
                   final k = _key(day);
-                  final count = markers[k] ?? 0;
+                  final count = markers[k] ?? 0; //Get the count for the day
                   return _DayCell(day: day, count: count, isSelected: isSameDay(selectedDay, day));
                 },
                 todayBuilder: (context, day, focused) {
@@ -641,7 +641,7 @@ class _DayCell extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Text('${day.day}', style: const TextStyle(fontWeight: FontWeight.w600)),
-          if (count > 0)
+          if (count > 0) //To display the green badge if the count is > 0
             Padding(
               padding: const EdgeInsets.only(top: 2),
               child: Container(

@@ -20,7 +20,7 @@ class HelperProfile {
   final String name;
   final String faculty;           // resolved faculty title
   final String email;
-  final String bio;               // user's about/bio text
+  final String bio;               // ** NEW: user's about/bio text
   final List<String> specializes; // interest titles
   final int sessions;             // total (non-cancelled) appointments
   final MatchLevel match;
@@ -196,20 +196,18 @@ class _StudentFindHelpPageState extends State<StudentFindHelpPage> {
     return '';
   }
 
-  // Determine match level from interest overlap count
   MatchLevel _matchFromOverlap(int overlap) {
     if (overlap >= 2) return MatchLevel.best;
     if (overlap == 1) return MatchLevel.good;
     return MatchLevel.low;
   }
 
-  /// Build one helper card from a **user** document (approved peer in users.role + status).
   Widget _buildHelperFromUserDoc(
       QueryDocumentSnapshot<Map<String, dynamic>> userDoc,
       ) {
     final helperData = userDoc.data();
 
-    // Relevant helper interest IDs by tab
+    // 1. READ INTEREST IDs: flexible check for various field names
     final helperInterestIds = _tabIndex == 0
         ? _readIdsFlexible(helperData, keys: const [
       'academicInterestIds',
@@ -222,18 +220,20 @@ class _StudentFindHelpPageState extends State<StudentFindHelpPage> {
       'profile.counselingTopicIds',
     ]);
 
+    // 2. GET STUDENT IDs: to check for overlaps
     final studentIds =
     _tabIndex == 0 ? _studentAcademicIds : _studentCounselingIds;
 
     return FutureBuilder(
       future: Future.wait([
-        _getInterestTitlesByIds(helperInterestIds), // interest titles
+        _getInterestTitlesByIds(helperInterestIds), // fetch text titles
         FirebaseFirestore.instance
             .collection('appointments')
             .where('helperId', isEqualTo: userDoc.id)
-            .get(), // count non-cancelled
+            .get(), // fetch appointments to count sessions
       ]),
       builder: (context, snap) {
+        // --- LOADING SKELETON ---
         if (snap.connectionState == ConnectionState.waiting) {
           return Opacity(
             opacity: .6,
@@ -251,6 +251,8 @@ class _StudentFindHelpPageState extends State<StudentFindHelpPage> {
                 photoUrl: null,
               ),
               onBook: () {},
+              // Pass empty set so it doesn't crash during load
+              studentInterests: const {},
             ),
           );
         }
@@ -268,11 +270,13 @@ class _StudentFindHelpPageState extends State<StudentFindHelpPage> {
           totalNonCancelled++;
         }
 
-        //IF INTEREST OVERLAPS
+        // --- MATCH CALCULATION ---
+        // Count how many IDs appear in both lists
         final overlap =
             helperInterestIds.where((id) => studentIds.contains(id)).length;
         final match = _matchFromOverlap(overlap);
 
+        // --- DATA EXTRACTION ---
         final name = _pickString(helperData, [
           'fullName',
           'full_name',
@@ -288,7 +292,7 @@ class _StudentFindHelpPageState extends State<StudentFindHelpPage> {
 
         final facultyId = (helperData['facultyId'] ?? '').toString();
 
-        // resolve photo url
+        // Resolve photo URL (check root and profile map)
         String? photoUrl;
         const possiblePhotoKeys = ['photoURL', 'photoUrl', 'avatarUrl', 'avatar'];
         for (final k in possiblePhotoKeys) {
@@ -310,6 +314,7 @@ class _StudentFindHelpPageState extends State<StudentFindHelpPage> {
           }
         }
 
+        // --- FACULTY FETCH & FINAL CARD ---
         return FutureBuilder<String>(
           future: _getFacultyTitle(facultyId),
           builder: (context, facSnap) {
@@ -322,13 +327,13 @@ class _StudentFindHelpPageState extends State<StudentFindHelpPage> {
               email: email,
               bio: bio,
               specializes: titles,
-              sessions: totalNonCancelled, // non-cancelled
+              sessions: totalNonCancelled,
               match: match,
               rawUser: helperData,
               photoUrl: photoUrl,
             );
 
-            // Search filter
+            // Client-side Search Filter
             final q = _query.trim().toLowerCase();
             if (q.isNotEmpty) {
               final inName = profile.name.toLowerCase().contains(q);
@@ -340,6 +345,9 @@ class _StudentFindHelpPageState extends State<StudentFindHelpPage> {
             return _HelperCard(
               p: profile,
               onBook: () => _openBooking(profile),
+              // Pass the actual student interest titles here
+              // This allows the card to know which words to bold!
+              studentInterests: _studentInterestTitlesForTab.toSet(),
             );
           },
         );
@@ -479,9 +487,9 @@ class _StudentFindHelpPageState extends State<StudentFindHelpPage> {
                   child: const Text('Please sign in to see available helpers.'),
                 )
               else
-              // 🔄 SEARCH **USERS** (approved peers) instead of peer_applications
+              // SEARCH **USERS** (approved peers) instead of peer_applications
                 StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                  stream: _usersCol
+                  stream: _usersCol //Filter between Peer Tutor / Peer Counsellor
                       .where('status', isEqualTo: 'active')
                       .where('role', isEqualTo: _roleString) // 'peer_tutor' | 'peer_counsellor'
                       .snapshots(),
@@ -502,6 +510,31 @@ class _StudentFindHelpPageState extends State<StudentFindHelpPage> {
                     final docs = (snap.data?.docs ?? const [])
                         .where((d) => d.id != uid) // hide myself
                         .toList();
+
+                    // Sort by Matching Level (Best -> Good -> Low)
+                    // ---------------------------------------------------------------------
+                    docs.sort((a, b) {
+                      final aData = a.data(); //Eg: Helper A compare with other helpers
+                      final bData = b.data(); //Eg: Helper B compare with other helpers
+
+                      // Determine which key set to use based on tab
+                      final academicKeys = const ['academicInterestIds','academicInterestsIds','profile.academicInterestIds'];
+                      final counselKeys  = const ['counselingTopicIds','counselingTopicsIds','profile.counselingTopicIds'];
+                      final keysToUse = _tabIndex == 0 ? academicKeys : counselKeys;
+                      final studentIds = _tabIndex == 0 ? _studentAcademicIds : _studentCounselingIds;
+
+                      // Extract IDs
+                      final aInterestIds = _readIdsFlexible(aData, keys: keysToUse);
+                      final bInterestIds = _readIdsFlexible(bData, keys: keysToUse);
+
+                      // Calculate overlap count
+                      final aOverlap = aInterestIds.where((id) => studentIds.contains(id)).length;
+                      final bOverlap = bInterestIds.where((id) => studentIds.contains(id)).length;
+
+                      // Sort Descending: Higher overlap comes first
+                      return bOverlap.compareTo(aOverlap);
+                    });
+                    // ---------------------------------------------------------------------
 
                     if (docs.isEmpty) {
                       return Container(
@@ -776,7 +809,13 @@ class _SegmentBar extends StatelessWidget {
 class _HelperCard extends StatelessWidget {
   final HelperProfile p;
   final VoidCallback onBook; // tap Book button only
-  const _HelperCard({required this.p, required this.onBook});
+  final Set<String> studentInterests; // Receive the student's interests here
+
+  const _HelperCard({
+    required this.p,
+    required this.onBook,
+    required this.studentInterests, //Required parameter
+  });
 
   void _openProfile(BuildContext context) {
     // This will navigate to a generic peer profile viewer, not implemented here.
@@ -842,7 +881,13 @@ class _HelperCard extends StatelessWidget {
           Text('Faculty: ${p.faculty.isEmpty ? '—' : p.faculty}',
               style: t.bodySmall),
           const SizedBox(height: 6),
-          _SpecializeLine(items: p.specializes),
+
+          // Pass the student's interests to the line widget
+          _SpecializeLine(
+            items: p.specializes,
+            highlights: studentInterests, // Passing the data down
+          ),
+
           const SizedBox(height: 6),
           Text(
             'Bio: ${p.bio.isEmpty ? "N/A" : p.bio}',
@@ -944,31 +989,47 @@ class _StatusChip extends StatelessWidget {
   }
 }
 
+// Code for choosing and highlighting which interests/topics to highlight
 class _SpecializeLine extends StatelessWidget {
-  final List<String> items;
-  const _SpecializeLine({required this.items});
+  final List<String> items; // The helper's specializations
+  final Set<String> highlights; // The student's interests to check against
+
+  const _SpecializeLine({
+    required this.items,
+    required this.highlights, // Require this to be passed in
+  });
 
   @override
   Widget build(BuildContext context) {
     final t = Theme.of(context).textTheme;
 
-    final boldCount = items.length >= 2 ? 2 : items.length;
     final spans = <TextSpan>[
       TextSpan(text: 'Specialize: ', style: t.bodySmall),
     ];
+
     for (var i = 0; i < items.length; i++) {
-      final isBold = i < boldCount;
+      final item = items[i];
+
+      // ALGORITHM: Check if the current specialization exists in the student's interests
+      // If it exists in the 'highlights' set, we mark it as a match.
+      final isMatch = highlights.contains(item);
+
       spans.add(TextSpan(
-        text: items[i],
+        text: item,
         style: t.bodySmall?.copyWith(
-          fontWeight: isBold ? FontWeight.w800 : FontWeight.w400,
+          // Logic: If it matches, make it Extra Bold (w900) and Black.
+          // If it doesn't match, keep it normal weight (w400) and slightly lighter color.
+          fontWeight: isMatch ? FontWeight.w900 : FontWeight.w400,
+          color: isMatch ? Colors.black : Colors.black87,
         ),
       ));
+
+      // Add a comma separator if it's not the last item
       if (i != items.length - 1) {
         spans.add(TextSpan(text: ', ', style: t.bodySmall));
       }
     }
-    return Text.rich(TextSpan(children: spans));
+    return Text.rich(TextSpan(children: spans)); //Allows sentence to flow like paragraph, wrapping to next line
   }
 }
 

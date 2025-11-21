@@ -608,7 +608,7 @@ class _CalendarArea extends StatelessWidget {
             final markers = <DateTime, int>{};
             void add(DateTime dt) {
               final k = _key(dt);
-              markers[k] = (markers[k] ?? 0) + 1;
+              markers[k] = (markers[k] ?? 0) + 1; //Increments the green badge count in calendar
             }
             for (final d in (appsSnap.data?.docs ?? const [])) {
               final m = d.data();
@@ -638,7 +638,7 @@ class _CalendarArea extends StatelessWidget {
               calendarBuilders: CalendarBuilders(
                 defaultBuilder: (context, day, focused) {
                   final k = _key(day);
-                  final count = markers[k] ?? 0;
+                  final count = markers[k] ?? 0; //Get count of events of the day
                   return _DayCell(day: day, count: count, isSelected: isSameDay(selectedDay, day));
                 },
                 todayBuilder: (context, day, focused) {
@@ -681,7 +681,7 @@ class _DayCell extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Text('${day.day}', style: const TextStyle(fontWeight: FontWeight.w600)),
-          if (count > 0)
+          if (count > 0) //Display the green circle if activities > 0
             Padding(
               padding: const EdgeInsets.only(top: 2),
               child: Container(
